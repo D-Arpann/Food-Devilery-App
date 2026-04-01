@@ -1,0 +1,225 @@
+/* ===== RESET & BASE ===== */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  /* Branding Colors */
+  --orange-main: #F8964F;
+  --orange-light: #FFF4EC;
+  --dark-primary: #1E1E1E;
+  --dark-secondary: #333232;
+  --dark-muted: #5E5E5E;
+  --white: #FFFFFF;
+  --off-white: #FCFAFA;
+  --bg-cream: #FFFCF9;
+
+  /* Navbar height for scroll offset */
+  --navbar-height: 80px;
+
+  /* Form & Spacing */
+  --ease-smooth: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+html {
+  scroll-behavior: smooth;
+  font-size: 16px;
+  scroll-padding-top: var(--navbar-height);
+}
+
+body {
+  font-family: 'Outfit', sans-serif;
+  color: var(--dark-primary);
+  background-color: var(--white);
+  line-height: 1.6;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+  transition: color 0.3s var(--ease-smooth);
+}
+
+ul {
+  list-style: none;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.container {
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+@media (max-width: 480px) {
+  .container {
+    padding: 0 20px;
+  }
+}
+
+/* ===== SHARED ===== */
+.section-header {
+  text-align: left;
+  max-width: 600px;
+  margin-bottom: 64px;
+}
+
+.section-tag {
+  display: inline-block;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--orange-main);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+}
+
+.section-header h2 {
+  font-size: 3rem;
+  font-weight: 700;
+  color: var(--dark-primary);
+  line-height: 1.1;
+  margin-bottom: 24px;
+  letter-spacing: -1px;
+}
+
+.section-header p {
+  font-size: 1.125rem;
+  color: var(--dark-muted);
+  line-height: 1.6;
+}
+
+/* ===== MINIMAL BUTTONS ===== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 28px;
+  border-radius: 8px;
+  font-family: 'Outfit', sans-serif;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s var(--ease-smooth);
+  border: 2px solid transparent;
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn-primary {
+  background: var(--orange-main);
+  color: var(--white);
+  border-color: #FFDCC3;
+}
+
+.btn-primary:hover,
+.btn-get-started:hover {
+  background: var(--dark-primary);
+  color: var(--white);
+  border-color: var(--dark-primary);
+  box-shadow: 0 8px 24px rgba(30, 30, 30, 0.2);
+  transform: translateY(-2px);
+}
+
+.btn-get-started {
+  background: var(--orange-main);
+  color: var(--white);
+  border-color: #FFDCC3;
+}
+
+.btn-outline {
+  background: transparent;
+  color: var(--dark-primary);
+  border-color: #EAEAEA;
+}
+
+.btn-outline:hover {
+  background: var(--dark-primary);
+  color: var(--white);
+  border-color: var(--dark-primary);
+  box-shadow: 0 8px 24px rgba(30, 30, 30, 0.15);
+  transform: translateY(-2px);
+}
+
+.btn-white {
+  background: var(--white);
+  color: var(--dark-primary);
+  border-color: #EAEAEA;
+}
+
+.btn-white:hover {
+  background: #F9F9F9;
+  border-color: #DDD;
+}
+
+/* ===== SCROLL REVEAL ===== */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.7s var(--ease-smooth), transform 0.7s var(--ease-smooth);
+}
+
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Staggered reveal for grid items */
+.reveal:nth-child(2) { transition-delay: 0.1s; }
+.reveal:nth-child(3) { transition-delay: 0.2s; }
+
+/* ===== KEYFRAMES ===== */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeInRight {
+  from {
+    opacity: 0;
+    transform: translateX(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Typography Utility */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* ===== SELECTION HIGHLIGHT ===== */
+::selection {
+  background-color: var(--orange-main);
+  color: var(--white);
+}
