@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Dimensions,
   Image,
@@ -15,7 +15,7 @@ import {
 import { useFonts } from 'expo-font';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { createAppClient, logout } from '@repo/api';
+import { createAppClient } from '@repo/api';
 import { Input, usePhoneAuthFlow } from '@repo/ui';
 import {
   AUTH_COPY,
@@ -25,6 +25,7 @@ import {
   NEPAL_COUNTRY_CODE,
   SUPABASE_DEFAULTS,
 } from '@repo/utils';
+import { DiscoveryScreen } from './src/DiscoveryScreen';
 import './global.css';
 
 const supabase = createAppClient({
@@ -108,7 +109,6 @@ function MobileAuthApp() {
   const [booting, setBooting] = useState(true);
   const [session, setSession] = useState(null);
   const [showIntro, setShowIntro] = useState(true);
-  const [logoutLoading, setLogoutLoading] = useState(false);
   const otpRefs = useRef([]);
   const [fontsLoaded] = useFonts({
     [FONT_REGULAR]: require('@expo-google-fonts/outfit/400Regular/Outfit_400Regular.ttf'),
@@ -165,6 +165,10 @@ function MobileAuthApp() {
 
       if (resolvedSession) {
         setShowIntro(false);
+      } else {
+        setShowIntro(true);
+        resetFlow();
+        otpRefs.current = [];
       }
     });
 
@@ -173,26 +177,6 @@ function MobileAuthApp() {
       data.subscription.unsubscribe();
     };
   }, []);
-
-  const accountRows = useMemo(() => {
-    const user = session?.user;
-
-    return [
-      { label: 'Phone', value: user?.phone },
-      { label: 'Email', value: user?.email || user?.user_metadata?.email },
-      { label: 'Full Name', value: user?.user_metadata?.full_name },
-      { label: 'Date of Birth', value: user?.user_metadata?.date_of_birth },
-    ];
-  }, [session]);
-
-  const firstName = useMemo(() => {
-    const name =
-      session?.user?.user_metadata?.full_name ||
-      session?.user?.phone ||
-      'User';
-
-    return name.split(' ')[0] || name;
-  }, [session]);
 
   const handleOpenAuth = () => {
     resetFlow();
@@ -232,20 +216,6 @@ function MobileAuthApp() {
     }
   };
 
-  const handleLogout = async () => {
-    setLogoutLoading(true);
-
-    try {
-      await logout(supabase);
-    } finally {
-      setLogoutLoading(false);
-      setSession(null);
-      setShowIntro(true);
-      resetFlow();
-      otpRefs.current = [];
-    }
-  };
-
   if (booting || !fontsLoaded) {
     return (
       <View style={[styles.loadingScreen, { paddingTop: topInset, paddingBottom: insets.bottom }]}>
@@ -257,46 +227,13 @@ function MobileAuthApp() {
 
   if (session) {
     return (
-      <View style={[styles.accountScreen, { paddingTop: topInset + s(18), paddingBottom: insets.bottom }]}>
-        <StatusBar barStyle="dark-content" />
-
-        <View style={styles.accountTop}>
-          <View style={styles.accountHelloWrap}>
-            <View style={styles.avatarBubble}>
-              <Text style={styles.avatarLetter}>{firstName.slice(0, 1).toUpperCase()}</Text>
-            </View>
-            <View>
-              <Text style={styles.accountHello}>Hey {firstName}</Text>
-              <Text style={styles.accountSub}>Account placeholder page</Text>
-            </View>
-          </View>
-
-          <ActionButton
-            title="Logout"
-            variant="outline"
-            onPress={handleLogout}
-            loading={logoutLoading}
-            style={styles.logoutButton}
-            textStyle={styles.logoutButtonText}
-          />
-        </View>
-
-        <View style={styles.accountCard}>
-          <Text style={styles.accountCardTitle}>Welcome</Text>
-          <Text style={styles.accountCardSubtitle}>
-            Next pages will be added in upcoming steps. For now, this screen shows account details.
-          </Text>
-
-          <View style={styles.accountRows}>
-            {accountRows.map((row) => (
-              <View key={row.label} style={styles.accountRow}>
-                <Text style={styles.accountLabel}>{row.label}</Text>
-                <Text style={styles.accountValue}>{row.value || 'Not available'}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      </View>
+      <DiscoveryScreen
+        session={session}
+        supabase={supabase}
+        topInset={topInset}
+        bottomInset={insets.bottom}
+        brandLogo={BRAND_LOGO}
+      />
     );
   }
 
