@@ -8,16 +8,19 @@
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
-    "lint": "turbo run lint"
+    "lint": "turbo run lint",
+    "brand:sync": "bash ./scripts/sync-brand-assets.sh"
+  },
+  "dependencies": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
   },
   "devDependencies": {
     "turbo": "^2.5.4"
   },
   "overrides": {
-    "react-device-frameset": {
-      "react": "",
-      "react-dom": "-dom"
-    }
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
   },
   "packageManager": "npm@11.6.2"
 }

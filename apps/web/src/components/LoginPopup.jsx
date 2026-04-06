@@ -1,24 +1,24 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import {
-  completeSignupProfile,
-  sendPhoneOtp,
-  verifyOtpAndSyncProfile,
-} from '@repo/api'
-import {
+  AUTH_COPY,
+  AUTH_THEME,
   AUTH_OTP_LENGTH,
+  AUTH_STEP,
   NEPAL_COUNTRY_CODE,
-  hasMinDigits,
   onlyDigits,
-  toNepalE164Phone,
 } from '@repo/utils'
-import { Button, Input } from '@repo/ui'
+import { Button, Input, usePhoneAuthFlow } from '@repo/ui'
 import './LoginPopup.css'
+
+const AUTH_COLORS = AUTH_THEME.colors
+const AUTH_RADII = AUTH_THEME.radii
+const AUTH_SIZES = AUTH_THEME.sizes
 
 const phoneInputStyle = {
   background: '#f4e5d8',
-  border: '3px solid #F8964F',
-  borderRadius: '16px',
-  minHeight: '66px',
+  border: `3px solid ${AUTH_COLORS.brand}`,
+  borderRadius: `${AUTH_RADII.field}px`,
+  minHeight: `${AUTH_SIZES.inputHeight}px`,
   padding: '0 22px',
 }
 
@@ -36,9 +36,9 @@ const phonePrefixStyle = {
 
 const signupInputStyle = {
   background: '#f4e5d8',
-  border: '3px solid #F8964F',
-  borderRadius: '16px',
-  minHeight: '62px',
+  border: `3px solid ${AUTH_COLORS.brand}`,
+  borderRadius: `${AUTH_RADII.field}px`,
+  minHeight: `${AUTH_SIZES.inputHeight}px`,
   padding: '0 18px',
 }
 
@@ -50,64 +50,78 @@ const signupInputTextStyle = {
 
 const ctaButtonStyle = {
   width: '100%',
-  minHeight: '62px',
-  borderRadius: '16px',
+  minHeight: `${AUTH_SIZES.buttonHeight}px`,
+  borderRadius: `${AUTH_RADII.field}px`,
   fontSize: '1.35rem',
   fontWeight: 800,
-  backgroundColor: '#F8964F',
-  borderColor: '#F8964F',
-  color: '#FFFFFF',
+  backgroundColor: AUTH_COLORS.brand,
+  borderColor: AUTH_COLORS.brand,
+  color: AUTH_COLORS.surface,
   boxShadow: 'none',
 }
 
 const outlineButtonStyle = {
   width: '100%',
-  minHeight: '62px',
-  borderRadius: '16px',
+  minHeight: `${AUTH_SIZES.buttonHeight}px`,
+  borderRadius: `${AUTH_RADII.field}px`,
   fontSize: '1.25rem',
   fontWeight: 700,
 }
 
+const authCssVars = {
+  '--auth-brand': AUTH_COLORS.brand,
+  '--auth-canvas': AUTH_COLORS.canvas,
+  '--auth-surface': AUTH_COLORS.surface,
+  '--auth-ink': AUTH_COLORS.ink,
+}
+
 export default function LoginPopup({ isOpen, onClose, supabase, onAuthenticated }) {
-  const [step, setStep] = useState(1)
-  const [phone, setPhone] = useState('')
-  const [otpDigits, setOtpDigits] = useState(Array(AUTH_OTP_LENGTH).fill(''))
-  const [fullName, setFullName] = useState('')
-  const [email, setEmail] = useState('')
-  const [dob, setDob] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const {
+    step,
+    phone,
+    setPhone,
+    otpDigits,
+    setOtpDigit,
+    setOtpCode,
+    fullName,
+    setFullName,
+    email,
+    setEmail,
+    dob,
+    setDob,
+    loading,
+    error,
+    resetFlow,
+    goBack,
+    submitPhone,
+    submitOtp,
+    submitSignup,
+    resendOtp,
+  } = usePhoneAuthFlow({
+    supabase,
+    onAuthenticated,
+    onFlowComplete: () => onClose?.(),
+  })
 
   useEffect(() => {
     if (isOpen) {
-      setStep(1)
-      setPhone('')
-      setOtpDigits(Array(AUTH_OTP_LENGTH).fill(''))
-      setFullName('')
-      setEmail('')
-      setDob('')
-      setError('')
+      resetFlow()
     }
-  }, [isOpen])
+  }, [isOpen, resetFlow])
 
   if (!isOpen) {
     return null
   }
 
   const handleTopBack = () => {
-    setError('')
-    if (step === 1) {
+    const steppedBack = goBack()
+    if (!steppedBack) {
       onClose()
-      return
     }
-    setStep((prev) => prev - 1)
   }
 
   const handleOtpChange = (index, value) => {
-    const digit = onlyDigits(value).slice(-1)
-    const nextDigits = [...otpDigits]
-    nextDigits[index] = digit
-    setOtpDigits(nextDigits)
+    const digit = setOtpDigit(index, value)
 
     if (digit && index < AUTH_OTP_LENGTH - 1) {
       const nextInput = document.getElementById(`otp-${index + 1}`)
@@ -123,133 +137,33 @@ export default function LoginPopup({ isOpen, onClose, supabase, onAuthenticated 
   }
 
   const handleOtpPaste = (event) => {
-    const pasted = onlyDigits(event.clipboardData.getData('text')).slice(
-      0,
-      AUTH_OTP_LENGTH,
-    )
+    const pasted = onlyDigits(event.clipboardData.getData('text')).slice(0, AUTH_OTP_LENGTH)
 
     if (!pasted) {
       return
     }
 
     event.preventDefault()
-
-    const nextDigits = Array(AUTH_OTP_LENGTH).fill('')
-    pasted.split('').forEach((digit, index) => {
-      nextDigits[index] = digit
-    })
-    setOtpDigits(nextDigits)
+    setOtpCode(pasted)
   }
 
   const handlePhoneSubmit = async (event) => {
     event.preventDefault()
-
-    if (!hasMinDigits(phone, 6)) {
-      setError('Please enter a valid phone number.')
-      return
-    }
-
-    setLoading(true)
-    setError('')
-
-    try {
-      const fullPhone = toNepalE164Phone(phone)
-      const { error: otpError } = await sendPhoneOtp(supabase, fullPhone)
-
-      if (otpError) {
-        setError(otpError.message)
-      } else {
-        setStep(2)
-      }
-    } catch (_err) {
-      setError('Failed to send OTP. Please try again.')
-    } finally {
-      setLoading(false)
-    }
+    await submitPhone()
   }
 
   const handleOtpSubmit = async (event) => {
     event.preventDefault()
-
-    const otpCode = otpDigits.join('')
-    if (otpCode.length < AUTH_OTP_LENGTH) {
-      setError('Please enter the 4-digit code.')
-      return
-    }
-
-    setLoading(true)
-    setError('')
-
-    try {
-      const fullPhone = toNepalE164Phone(phone)
-      const { data, error: verifyError } = await verifyOtpAndSyncProfile(supabase, {
-        phone: fullPhone,
-        token: otpCode,
-      })
-
-      if (verifyError) {
-        setError(verifyError.message)
-      } else if (data?.session && data?.needsSignup) {
-        setStep(3)
-      } else if (data?.session) {
-        onAuthenticated?.(data.session)
-        onClose()
-      } else {
-        setError('Could not verify the code. Please try again.')
-      }
-    } catch (_err) {
-      setError('Verification failed. Please try again.')
-    } finally {
-      setLoading(false)
-    }
+    await submitOtp()
   }
 
   const handleSignupSubmit = async (event) => {
     event.preventDefault()
-
-    setLoading(true)
-    setError('')
-
-    try {
-      const fullPhone = toNepalE164Phone(phone)
-      const { error: signupError } = await completeSignupProfile(supabase, {
-        phone: fullPhone,
-        full_name: fullName,
-        email,
-        date_of_birth: dob,
-      })
-
-      if (signupError) {
-        setError(signupError.message)
-      } else {
-        const { data } = await supabase.auth.getSession()
-        if (data?.session) {
-          onAuthenticated?.(data.session)
-        }
-        onClose()
-      }
-    } catch (_err) {
-      setError('Signup failed. Please try again.')
-    } finally {
-      setLoading(false)
-    }
+    await submitSignup()
   }
 
   const handleResend = async () => {
-    setLoading(true)
-    setError('')
-
-    try {
-      const fullPhone = toNepalE164Phone(phone)
-      const { error: resendError } = await sendPhoneOtp(supabase, fullPhone)
-      if (resendError) {
-        setError(resendError.message)
-      }
-    } catch (_err) {
-      setError('Failed to resend OTP.')
-    } finally {
-      setLoading(false)
-    }
+    await resendOtp()
   }
 
   return (
@@ -259,6 +173,7 @@ export default function LoginPopup({ isOpen, onClose, supabase, onAuthenticated 
       role="dialog"
       aria-modal="true"
       aria-label="Login popup"
+      style={authCssVars}
     >
       <div className="auth-modal" onClick={(event) => event.stopPropagation()}>
         <button className="auth-nav-back" onClick={handleTopBack} aria-label="Go back">
@@ -278,10 +193,10 @@ export default function LoginPopup({ isOpen, onClose, supabase, onAuthenticated 
         <div className="auth-content">
           {error && <p className="auth-error">{error}</p>}
 
-          {step === 1 && (
+          {step === AUTH_STEP.PHONE && (
             <div className="auth-step slide-in">
-              <h1>Time to eat</h1>
-              <p className="subtitle">Your number is the secret ingredient.</p>
+              <h1>{AUTH_COPY.phone.title}</h1>
+              <p className="subtitle">{AUTH_COPY.phone.subtitle}</p>
 
               <form onSubmit={handlePhoneSubmit}>
                 <Input
@@ -298,18 +213,18 @@ export default function LoginPopup({ isOpen, onClose, supabase, onAuthenticated 
 
                 <Button
                   type="submit"
-                  title={loading ? 'Sending...' : 'Continue'}
+                  title={loading ? 'Sending...' : AUTH_COPY.phone.action}
                   loading={loading}
                   style={ctaButtonStyle}
                 />
 
                 <div className="auth-divider">
-                  <span>OR</span>
+                  <span>{AUTH_COPY.common.or}</span>
                 </div>
 
                 <Button
                   type="button"
-                  title="Other login method"
+                  title={AUTH_COPY.phone.alternate}
                   variant="outline"
                   style={outlineButtonStyle}
                 />
@@ -317,10 +232,10 @@ export default function LoginPopup({ isOpen, onClose, supabase, onAuthenticated 
             </div>
           )}
 
-          {step === 2 && (
+          {step === AUTH_STEP.OTP && (
             <div className="auth-step slide-in">
-              <h1>Check your texts</h1>
-              <p className="subtitle">Pop in the code from your messages.</p>
+              <h1>{AUTH_COPY.otp.title}</h1>
+              <p className="subtitle">{AUTH_COPY.otp.subtitle}</p>
 
               <form onSubmit={handleOtpSubmit}>
                 <div className="otp-inputs" onPaste={handleOtpPaste}>
@@ -341,27 +256,28 @@ export default function LoginPopup({ isOpen, onClose, supabase, onAuthenticated 
 
                 <Button
                   type="submit"
-                  title={loading ? 'Verifying...' : 'Verify'}
+                  title={loading ? 'Verifying...' : AUTH_COPY.otp.action}
                   disabled={loading}
                   style={ctaButtonStyle}
                 />
 
                 <p className="resend-text">
-                  Didn&apos;t get the code? <strong onClick={handleResend}>Resend</strong>
+                  {AUTH_COPY.otp.resendLead}{' '}
+                  <strong onClick={handleResend}>{AUTH_COPY.otp.resendAction}</strong>
                 </p>
               </form>
             </div>
           )}
 
-          {step === 3 && (
+          {step === AUTH_STEP.SIGNUP && (
             <div className="auth-step slide-in">
-              <h1>First rodeo?</h1>
-              <p className="subtitle">Welcome to the cool table.</p>
+              <h1>{AUTH_COPY.signup.title}</h1>
+              <p className="subtitle">{AUTH_COPY.signup.subtitle}</p>
 
               <form onSubmit={handleSignupSubmit} className="signup-form">
                 <Input
-                  label="Full name"
-                  placeholder="User For Testing"
+                  label={AUTH_COPY.signup.fullNameLabel}
+                  placeholder={AUTH_COPY.signup.fullNamePlaceholder}
                   value={fullName}
                   onChangeText={setFullName}
                   inputStyle={signupInputTextStyle}
@@ -370,9 +286,9 @@ export default function LoginPopup({ isOpen, onClose, supabase, onAuthenticated 
                 />
 
                 <Input
-                  label="Email"
+                  label={AUTH_COPY.signup.emailLabel}
                   type="email"
-                  placeholder="user@gmail.com"
+                  placeholder={AUTH_COPY.signup.emailPlaceholder}
                   value={email}
                   onChangeText={setEmail}
                   inputStyle={signupInputTextStyle}
@@ -381,8 +297,9 @@ export default function LoginPopup({ isOpen, onClose, supabase, onAuthenticated 
                 />
 
                 <Input
-                  label="Date of birth"
+                  label={AUTH_COPY.signup.dobLabel}
                   type="date"
+                  placeholder={AUTH_COPY.signup.dobPlaceholder}
                   value={dob}
                   onChangeText={setDob}
                   inputStyle={signupInputTextStyle}
@@ -394,14 +311,12 @@ export default function LoginPopup({ isOpen, onClose, supabase, onAuthenticated 
                 <Button
                   className="signup-submit"
                   type="submit"
-                  title={loading ? 'Signing up...' : 'Sign up'}
+                  title={loading ? 'Signing up...' : AUTH_COPY.signup.action}
                   loading={loading}
                   style={ctaButtonStyle}
                 />
 
-                <p className="signup-disclaimer">
-                  By signing up you are agreeing to the terms of service.
-                </p>
+                <p className="signup-disclaimer">{AUTH_COPY.signup.disclaimer}</p>
               </form>
             </div>
           )}
