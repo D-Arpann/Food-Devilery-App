@@ -39,6 +39,48 @@ export async function fetchActiveMenu(client, foodPlaceId) {
   }
 }
 
+export async function fetchRestaurantFeed(client, options = {}) {
+  const { limit = 36 } = options;
+
+  try {
+    const { data: restaurants, error: restaurantError } = await fetchActiveRestaurants(client, { limit });
+    if (restaurantError) throw restaurantError;
+
+    const placeIds = (restaurants || []).map((place) => place.id).filter(Boolean);
+    if (!placeIds.length) {
+      return { data: [], error: null };
+    }
+
+    const { data: menuItems, error: menuError } = await client
+      .from(TABLES.MENU_ITEMS)
+      .select('id, food_place_id, name, description, price, image_url, is_available, category')
+      .in('food_place_id', placeIds)
+      .eq('is_available', true)
+      .order('created_at', { ascending: false });
+
+    if (menuError) throw menuError;
+
+    const menuByPlaceId = (menuItems || []).reduce((acc, item) => {
+      const placeId = item.food_place_id;
+      if (!acc[placeId]) {
+        acc[placeId] = [];
+      }
+      acc[placeId].push(item);
+      return acc;
+    }, {});
+
+    const mergedFeed = (restaurants || []).map((place) => ({
+      ...place,
+      menu_items: menuByPlaceId[place.id] || [],
+    }));
+
+    return { data: mergedFeed, error: null };
+  } catch (error) {
+    console.error('Error fetching restaurant feed:', error);
+    return { data: null, error };
+  }
+}
+
 export async function createOrder(client, orderPayload) {
   try {
     const { data, error } = await client

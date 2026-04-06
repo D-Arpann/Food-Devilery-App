@@ -7,4 +7,10 @@ export {
   completeSignupProfile,
   logout,
 } from './auth.js'
-export { fetchActiveRestaurants, fetchActiveMenu, createOrder, updateOrderStatus } from './queries.js'
+export {
+  fetchActiveRestaurants,
+  fetchActiveMenu,
+  fetchRestaurantFeed,
+  createOrder,
+  updateOrderStatus,
+} from './queries.js'
