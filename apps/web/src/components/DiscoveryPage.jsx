@@ -1,33 +1,35 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fetchRestaurantFeed } from '@repo/api';
+import {
+  filterMenuItems,
+  filterRestaurantFeed,
+  formatNpr,
+  getDeliveryFee,
+  getRestaurantRating,
+} from '@repo/utils';
 import { Logo } from '@repo/ui';
 import './DiscoveryPage.css';
 
-function getRestaurantRating(restaurantId = '') {
-  const codeSum = String(restaurantId)
-    .split('')
-    .reduce((sum, char) => sum + char.charCodeAt(0), 0);
-
-  const rating = 4.2 + (codeSum % 8) * 0.1;
-  return rating.toFixed(1);
-}
-
-function getDeliveryFee(restaurantId = '') {
-  const codeSum = String(restaurantId)
-    .split('')
-    .reduce((sum, char) => sum + char.charCodeAt(0), 0);
-
-  return 45 + (codeSum % 4) * 15;
-}
-
-function formatNpr(amount) {
-  const value = Number(amount || 0);
-  return `Rs ${Math.round(value)}`;
+function SearchField({ value, onChange, placeholder = 'Search restaurants or menu items' }) {
+  return (
+    <label className="discover-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+        <circle cx="11" cy="11" r="7" />
+        <line x1="20" y1="20" x2="16.65" y2="16.65" />
+      </svg>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+      />
+    </label>
+  );
 }
 
 export default function DiscoveryPage({ session, supabase, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [feed, setFeed] = useState([]);
   const [activeRestaurantId, setActiveRestaurantId] = useState(null);
 
@@ -61,7 +63,10 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
     };
   }, [supabase]);
 
-  const filteredRestaurants = feed;
+  const filteredRestaurants = useMemo(
+    () => filterRestaurantFeed(feed, searchQuery),
+    [feed, searchQuery],
+  );
 
   const resolvedActiveRestaurantId = useMemo(() => {
     if (!filteredRestaurants.length) {
@@ -77,7 +82,10 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
     [filteredRestaurants, resolvedActiveRestaurantId],
   );
 
-  const activeMenuItems = activeRestaurant?.menu_items || [];
+  const activeMenuItems = useMemo(
+    () => filterMenuItems(activeRestaurant?.menu_items || [], searchQuery),
+    [activeRestaurant, searchQuery],
+  );
 
   const fullName = session?.user?.user_metadata?.full_name || session?.user?.phone || 'Hey User';
   const firstName = fullName.split(' ')[0] || fullName;
@@ -95,6 +103,8 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
         <button className="discover-logout" onClick={onLogout}>Logout</button>
       </header>
 
+      <SearchField value={searchQuery} onChange={setSearchQuery} />
+
       <section className="discover-layout">
         <aside className="discover-list">
           <div className="discover-list-head">
@@ -104,7 +114,9 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
 
           {loading && <p className="discover-note">Loading restaurants...</p>}
           {!loading && error && <p className="discover-error">{error}</p>}
-          {!loading && !error && !filteredRestaurants.length && <p className="discover-note">No restaurants available.</p>}
+          {!loading && !error && !filteredRestaurants.length && (
+            <p className="discover-note">No restaurants match your search.</p>
+          )}
 
           <div className="discover-cards">
             {filteredRestaurants.map((restaurant) => {
@@ -174,7 +186,7 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
               </div>
 
               {!activeMenuItems.length ? (
-                <p className="discover-note">No menu items available for this restaurant.</p>
+                <p className="discover-note">No menu items match your search.</p>
               ) : (
                 <div className="discover-menu-grid">
                   {activeMenuItems.map((item) => (

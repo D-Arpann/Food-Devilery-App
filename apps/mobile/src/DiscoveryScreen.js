@@ -5,11 +5,18 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchRestaurantFeed, logout } from '@repo/api';
-import { formatNpr, getDeliveryFee, getRestaurantRating } from '@repo/utils';
+import {
+  filterMenuItems,
+  filterRestaurantFeed,
+  formatNpr,
+  getDeliveryFee,
+  getRestaurantRating,
+} from '@repo/utils';
 
 const TAB_HOME = 'home';
 const TAB_ORDERS = 'orders';
@@ -22,6 +29,21 @@ const tabs = [
   { key: TAB_CART, icon: 'cart', label: 'Cart' },
   { key: TAB_PROFILE, icon: 'person', label: 'Profile' },
 ];
+
+function SearchBar({ value, onChangeText, placeholder = 'Search' }) {
+  return (
+    <View style={styles.searchBar}>
+      <Ionicons name="search" size={20} color="#F8964F" />
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor="#8E8882"
+        style={styles.searchInput}
+      />
+    </View>
+  );
+}
 
 function SectionHeader({ title }) {
   return (
@@ -113,6 +135,7 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
   const [feed, setFeed] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState(TAB_HOME);
   const [selectedRestaurantId, setSelectedRestaurantId] = useState(null);
   const [logoutLoading, setLogoutLoading] = useState(false);
@@ -153,30 +176,39 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
   const userName = session?.user?.user_metadata?.full_name || session?.user?.phone || 'User';
   const firstName = userName.split(' ')[0] || userName;
 
+  const filteredRestaurants = useMemo(
+    () => filterRestaurantFeed(feed, searchQuery),
+    [feed, searchQuery],
+  );
+
   useEffect(() => {
-    if (!feed.length) {
+    if (!filteredRestaurants.length) {
       setSelectedRestaurantId(null);
       return;
     }
 
     if (selectedRestaurantId) {
-      const exists = feed.some((place) => place.id === selectedRestaurantId);
+      const exists = filteredRestaurants.some((place) => place.id === selectedRestaurantId);
       if (!exists) {
         setSelectedRestaurantId(null);
       }
     }
-  }, [feed, selectedRestaurantId]);
+  }, [filteredRestaurants, selectedRestaurantId]);
 
   const selectedRestaurant = useMemo(
-    () => feed.find((place) => place.id === selectedRestaurantId) || null,
-    [feed, selectedRestaurantId],
+    () => filteredRestaurants.find((place) => place.id === selectedRestaurantId) || null,
+    [filteredRestaurants, selectedRestaurantId],
   );
 
-  const selectedMenuItems = selectedRestaurant?.menu_items || [];
+  const selectedMenuItems = useMemo(
+    () => filterMenuItems(selectedRestaurant?.menu_items || [], searchQuery),
+    [selectedRestaurant, searchQuery],
+  );
 
   const openRestaurant = (restaurantId) => {
     setActiveTab(TAB_HOME);
     setSelectedRestaurantId(restaurantId);
+    setSearchQuery('');
   };
 
   const handleLogout = async () => {
@@ -196,16 +228,21 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
         <ScrollView
           contentContainerStyle={styles.menuScreenContent}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
         >
           <View style={styles.menuTopRow}>
             <Pressable
               style={styles.menuBackButton}
               onPress={() => {
                 setSelectedRestaurantId(null);
+                setSearchQuery('');
               }}
             >
               <Ionicons name="arrow-back" size={20} color="#1E1E1E" />
             </Pressable>
+            <View style={styles.menuSearchWrap}>
+              <SearchBar value={searchQuery} onChangeText={setSearchQuery} />
+            </View>
           </View>
 
           <View style={styles.menuRestaurantCard}>
@@ -227,7 +264,7 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
 
           <View style={styles.menuPanel}>
             {!selectedMenuItems.length ? (
-              <Text style={styles.emptyText}>No menu items available right now.</Text>
+              <Text style={styles.emptyText}>No menu items match your search.</Text>
             ) : (
               selectedMenuItems.map((item) => <MenuItemRow key={item.id} item={item} />)
             )}
@@ -244,6 +281,7 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
           <ScrollView
             contentContainerStyle={styles.homeContent}
             showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
           >
             <View style={styles.homeTopRow}>
               <View style={styles.homeUserRow}>
@@ -259,6 +297,8 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
                 <Ionicons name="notifications-outline" size={21} color="#1E1E1E" />
               </Pressable>
             </View>
+
+            <SearchBar value={searchQuery} onChangeText={setSearchQuery} />
 
             <SectionHeader title="Offers:" />
             <View style={styles.offerCard}>
@@ -279,12 +319,12 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
 
             {loading && <Text style={styles.helperText}>Loading restaurants...</Text>}
             {!loading && !!error && <Text style={styles.errorText}>{error}</Text>}
-            {!loading && !error && !feed.length && (
-              <Text style={styles.helperText}>No restaurants available right now.</Text>
+            {!loading && !error && !filteredRestaurants.length && (
+              <Text style={styles.helperText}>No restaurants match your search.</Text>
             )}
 
             <View style={styles.featuredList}>
-              {feed.map((restaurant) => (
+              {filteredRestaurants.map((restaurant) => (
                 <RestaurantCard
                   key={restaurant.id}
                   restaurant={restaurant}
@@ -394,6 +434,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8964F',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 48,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#EED3BF',
+    backgroundColor: '#F3E1D2',
+    paddingHorizontal: 14,
+    gap: 10,
+  },
+  searchInput: {
+    flex: 1,
+    color: '#2A2A2A',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 18,
+    paddingVertical: 8,
   },
   sectionHeaderRow: {
     marginTop: 20,
@@ -563,6 +621,7 @@ const styles = StyleSheet.create({
   menuTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 10,
     marginBottom: 16,
   },
   menuBackButton: {
@@ -571,6 +630,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  menuSearchWrap: {
+    flex: 1,
   },
   menuRestaurantCard: {
     flexDirection: 'row',
