@@ -112,6 +112,20 @@ function MenuQuantityControl({ quantity, onIncrease, onDecrease }) {
   );
 }
 
+function CartInlineStepper({ quantity, onIncrease, onDecrease }) {
+  return (
+    <View style={styles.cartInlineStepper}>
+      <Pressable style={styles.cartInlineAction} onPress={onDecrease}>
+        <Ionicons name="remove" size={16} color="#1E1E1E" />
+      </Pressable>
+      <Text style={styles.cartInlineValue}>{quantity}</Text>
+      <Pressable style={styles.cartInlineAction} onPress={onIncrease}>
+        <Ionicons name="add" size={16} color="#1E1E1E" />
+      </Pressable>
+    </View>
+  );
+}
+
 function RestaurantCard({ restaurant, onPress }) {
   const firstItem = restaurant.menu_items?.[0];
 
@@ -216,6 +230,33 @@ function MenuItemRow({ item, active = false, onPress }) {
   );
 }
 
+function CartItemCard({ item, restaurantName, onIncrease, onDecrease }) {
+  return (
+    <View style={styles.cartItemCard}>
+      <View style={styles.cartItemImageWrap}>
+        {item.image_url ? (
+          <Image source={{ uri: item.image_url }} style={styles.cartItemImage} />
+        ) : (
+          <View style={[styles.cartItemImage, styles.cartItemImagePlaceholder]} />
+        )}
+      </View>
+      <View style={styles.cartItemTextWrap}>
+        <Text style={styles.cartItemName} numberOfLines={1}>{item.name}</Text>
+        <View style={styles.cartItemRestaurantChip}>
+          <Ionicons name="storefront" size={12} color="#D67D3B" />
+          <Text style={styles.cartItemRestaurantText} numberOfLines={1}>{restaurantName}</Text>
+        </View>
+        <Text style={styles.cartItemPrice}>{formatNpr(item.price)}</Text>
+      </View>
+      <CartInlineStepper
+        quantity={item.quantity}
+        onIncrease={onIncrease}
+        onDecrease={onDecrease}
+      />
+    </View>
+  );
+}
+
 function BottomNav({ activeTab, onChange, bottomInset }) {
   const getTabIcon = (tabKey, active) => {
     switch (tabKey) {
@@ -273,6 +314,7 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
   const [selectedRestaurantId, setSelectedRestaurantId] = useState(null);
   const [menuSelection, setMenuSelection] = useState({ itemId: null, quantity: 0 });
   const [logoutLoading, setLogoutLoading] = useState(false);
+  const [cartMessage, setCartMessage] = useState('');
 
   const {
     restaurant: cartRestaurant,
@@ -280,7 +322,10 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
     notice: cartNotice,
     itemCount,
     incrementItem,
+    decrementItem,
+    clearCart,
     dismissNotice,
+    getSummary,
   } = useCart();
 
   useEffect(() => {
@@ -327,6 +372,12 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
 
     return () => clearTimeout(timer);
   }, [cartNotice, dismissNotice]);
+
+  useEffect(() => {
+    if (!cartItems.length && cartMessage) {
+      setCartMessage('');
+    }
+  }, [cartItems.length, cartMessage]);
 
   const userName = session?.user?.user_metadata?.full_name || session?.user?.phone || 'User';
   const firstName = userName.split(' ')[0] || userName;
@@ -450,6 +501,7 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
     }
 
     setMenuSelection({ itemId: null, quantity: 0 });
+    setCartMessage('');
   };
 
   const handleLogout = async () => {
@@ -462,6 +514,8 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
   };
 
   const showRestaurantMenu = activeTab === TAB_HOME && selectedRestaurantId && selectedRestaurant;
+  const cartDeliveryFee = cartRestaurant?.id ? getDeliveryFee(cartRestaurant.id) : 0;
+  const cartSummary = getSummary(cartDeliveryFee);
 
   if (showRestaurantMenu) {
     return (
@@ -575,7 +629,14 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
   }
 
   return (
-    <View style={[styles.screen, styles.homeScreen, { paddingTop: topInset + 34, paddingBottom: bottomInset + 10 }]}> 
+    <View style={[
+      styles.screen,
+      activeTab === TAB_CART ? styles.cartScreen : activeTab === TAB_ORDERS ? styles.ordersScreen : styles.homeScreen,
+      {
+        paddingTop: activeTab === TAB_CART ? topInset + 50 : topInset + 34,
+        paddingBottom: activeTab === TAB_CART ? bottomInset : bottomInset + 10,
+      },
+    ]}> 
       {cartNotice ? (
         <View style={styles.noticeBarFloating}>
           <Text style={styles.noticeText}>{cartNotice}</Text>
@@ -683,13 +744,102 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
       )}
 
       {activeTab === TAB_CART && (
-        <>
-          <PlaceholderPane
-            title="Cart State Ready"
-            subtitle={itemCount ? `${itemCount} item${itemCount === 1 ? '' : 's'} added. The cart screen ships in the next patch.` : 'Add items from one restaurant. The cart screen ships in the next patch.'}
-          />
-          <BottomNav activeTab={activeTab} onChange={setActiveTab} bottomInset={bottomInset} />
-        </>
+        <ScrollView
+          contentContainerStyle={styles.cartContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={[styles.contentFrame, styles.cartFrame]}>
+            <View style={styles.cartHeader}>
+              <Pressable style={styles.cartHeaderIcon} onPress={() => setActiveTab(TAB_HOME)}>
+                <Ionicons name="arrow-back" size={22} color="#1E1E1E" />
+              </Pressable>
+              <Text style={styles.cartTitle}>Cart</Text>
+              <Pressable style={styles.cartHeaderIcon} onPress={clearCart}>
+                <Ionicons name="trash" size={19} color="#1E1E1E" />
+              </Pressable>
+            </View>
+
+            {!cartItems.length ? (
+              <View style={styles.cartEmptyCard}>
+                <Text style={styles.cartEmptyTitle}>Your cart is empty</Text>
+                <Text style={styles.cartEmptySubtitle}>Add items from a restaurant to start checkout.</Text>
+                <Pressable style={styles.cartBrowseButton} onPress={() => setActiveTab(TAB_HOME)}>
+                  <Text style={styles.cartBrowseButtonText}>Browse Food</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={styles.cartBody}>
+                <View style={styles.cartItemsList}>
+                  {cartItems.map((item) => (
+                    <CartItemCard
+                      key={item.id}
+                      item={item}
+                      restaurantName={cartRestaurant?.name || 'Selected restaurant'}
+                      onIncrease={() => incrementItem(cartRestaurant, item)}
+                      onDecrease={() => decrementItem(cartRestaurant, item)}
+                    />
+                  ))}
+                </View>
+
+                <View style={styles.billCard}>
+                  <View style={styles.billTopRow}>
+                    <View style={styles.billTitleWrap}>
+                      <MaterialCommunityIcons name="receipt-text" size={20} color="#F8964F" />
+                      <Text style={styles.billTitle}>Bill</Text>
+                    </View>
+                    <View style={styles.billItemCountChip}>
+                      <Ionicons name="cart" size={12} color="#D67D3B" />
+                      <Text style={styles.billItemCount}>{cartSummary.itemCount} items</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.billPanel}>
+                    <View style={styles.billRow}>
+                      <View style={styles.billLabelWrap}>
+                        <Ionicons name="pricetag" size={14} color="#8C6B56" />
+                        <Text style={styles.billLabel}>Sub Total:</Text>
+                      </View>
+                      <Text style={styles.billValue}>{formatNpr(cartSummary.subtotal)}</Text>
+                    </View>
+                    <View style={styles.billRow}>
+                      <View style={styles.billLabelWrap}>
+                        <MaterialCommunityIcons name="motorbike" size={15} color="#8C6B56" />
+                        <Text style={styles.billLabel}>Delivery charge:</Text>
+                      </View>
+                      <Text style={styles.billValue}>{formatNpr(cartSummary.deliveryFee)}</Text>
+                    </View>
+                    <View style={[styles.billRow, styles.billTotalRow]}>
+                      <View style={styles.billLabelWrap}>
+                        <Ionicons name="wallet" size={15} color="#252525" />
+                        <Text style={[styles.billLabel, styles.billLabelStrong]}>Total:</Text>
+                      </View>
+                      <Text style={[styles.billValue, styles.billValueStrong]}>{formatNpr(cartSummary.total)}</Text>
+                    </View>
+                  </View>
+
+                  <Pressable
+                    style={[styles.checkoutButton, styles.checkoutButtonDisabled]}
+                    onPress={() => setCartMessage('Checkout submission lands in the next patch.')}
+                  >
+                    <View style={styles.checkoutButtonInner}>
+                      <View style={styles.checkoutButtonPattern} />
+                      <FoodPatternLayer color="rgba(214, 96, 24, 0.42)" />
+                      <View style={styles.checkoutButtonContent}>
+                        <MaterialCommunityIcons name="cart-check" size={18} color="#FFFFFF" />
+                        <Text style={styles.checkoutButtonText}>Checkout next</Text>
+                      </View>
+                    </View>
+                  </Pressable>
+
+                  {!!cartMessage && (
+                    <Text style={styles.checkoutMessage}>{cartMessage}</Text>
+                  )}
+                </View>
+              </View>
+            )}
+          </View>
+        </ScrollView>
       )}
 
       {activeTab === TAB_PROFILE && (
