@@ -12,5 +12,6 @@ export {
   fetchActiveMenu,
   fetchRestaurantFeed,
   createOrder,
+  createCheckoutOrder,
   updateOrderStatus,
 } from './queries.js'

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createAppClient, logout } from '@repo/api';
 import { SUPABASE_DEFAULTS } from '@repo/utils';
+import { CartProvider } from '@repo/ui';
 import LoginPopup from './components/LoginPopup';
 import WebPage from './components/WebPage';
 import DiscoveryPage from './components/DiscoveryPage';
@@ -71,10 +72,12 @@ export default function App() {
   }
 
   return (
-    <DiscoveryPage
-      session={session}
-      supabase={supabase}
-      onLogout={handleLogout}
-    />
+    <CartProvider>
+      <DiscoveryPage
+        session={session}
+        supabase={supabase}
+        onLogout={handleLogout}
+      />
+    </CartProvider>
   );
 }

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { fetchRestaurantFeed } from '@repo/api';
-import { Logo } from '@repo/ui';
+import { createCheckoutOrder, fetchRestaurantFeed } from '@repo/api';
+import { Logo, useCart } from '@repo/ui';
 import {
   filterMenuItems,
   filterRestaurantFeed,
   formatNpr,
   getDeliveryFee,
   getRestaurantRating,
+  isValidDeliveryAddress,
+  normalizeDeliveryAddress,
 } from '@repo/utils';
 import './DiscoveryPage.css';
 
@@ -86,6 +88,16 @@ function IconHome() {
   );
 }
 
+function QuantityControl({ quantity, onDecrease, onIncrease }) {
+  return (
+    <div className="discover-qty">
+      <button type="button" onClick={onDecrease} aria-label="Decrease quantity">-</button>
+      <span>{quantity}</span>
+      <button type="button" onClick={onIncrease} aria-label="Increase quantity">+</button>
+    </div>
+  );
+}
+
 function RestaurantCard({ restaurant, active, compact = false, onSelect }) {
   const firstItem = restaurant.menu_items?.[0];
   const rating = getRestaurantRating(restaurant.id);
@@ -127,7 +139,7 @@ function RestaurantCard({ restaurant, active, compact = false, onSelect }) {
   );
 }
 
-function MenuItemCard({ item }) {
+function MenuItemCard({ item, quantity, canAdd, onAdd, onIncrease, onDecrease }) {
   return (
     <article className="discover-menu-item">
       <img src={item.image_url || Logo} alt={item.name} />
@@ -146,19 +158,90 @@ function MenuItemCard({ item }) {
             <IconRupee />
             {formatNpr(item.price)}
           </strong>
+
+          <div className="discover-menu-actions">
+            {quantity > 0 ? (
+              <QuantityControl
+                quantity={quantity}
+                onIncrease={onIncrease}
+                onDecrease={onDecrease}
+              />
+            ) : (
+              <button
+                type="button"
+                className="discover-add-btn"
+                onClick={onAdd}
+                disabled={!canAdd}
+              >
+                {canAdd ? 'Add' : 'Single restaurant cart'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </article>
   );
 }
 
+function CartLineItem({ item, onIncrease, onDecrease }) {
+  return (
+    <article className="discover-cart-item">
+      <img src={item.image_url || Logo} alt={item.name} />
+      <div>
+        <h4>{item.name}</h4>
+        <p>{formatNpr(item.price)}</p>
+      </div>
+      <QuantityControl
+        quantity={item.quantity}
+        onIncrease={onIncrease}
+        onDecrease={onDecrease}
+      />
+    </article>
+  );
+}
+
 export default function DiscoveryPage({ session, supabase, onLogout }) {
+  const initialAddress = normalizeDeliveryAddress(session?.user?.user_metadata?.address);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [feed, setFeed] = useState([]);
   const [activeRestaurantId, setActiveRestaurantId] = useState(null);
   const [screen, setScreen] = useState('browse');
+  const [deliveryAddress, setDeliveryAddress] = useState(initialAddress);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutMessage, setCheckoutMessage] = useState('');
+  const [checkoutSuccess, setCheckoutSuccess] = useState(null);
+
+  const {
+    restaurant: cartRestaurant,
+    items: cartItems,
+    notice: cartNotice,
+    itemCount,
+    incrementItem,
+    decrementItem,
+    clearCart,
+    dismissNotice,
+    getSummary,
+  } = useCart();
+
+  useEffect(() => {
+    if (!cartNotice) {
+      return undefined;
+    }
+
+    const timer = setTimeout(() => {
+      dismissNotice();
+    }, 3200);
+
+    return () => clearTimeout(timer);
+  }, [cartNotice, dismissNotice]);
+
+  useEffect(() => {
+    if (cartItems.length && checkoutSuccess) {
+      setCheckoutSuccess(null);
+    }
+  }, [cartItems.length, checkoutSuccess]);
 
   useEffect(() => {
     let active = true;
@@ -224,12 +307,93 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
     [activeRestaurant, searchQuery],
   );
 
+  const menuQuantityMap = useMemo(() => {
+    return cartItems.reduce((acc, item) => {
+      acc[item.id] = item.quantity;
+      return acc;
+    }, {});
+  }, [cartItems]);
+
+  const canAddFromActiveRestaurant = !cartRestaurant?.id || cartRestaurant.id === activeRestaurant?.id;
+  const checkoutDeliveryFee = cartRestaurant?.id ? getDeliveryFee(cartRestaurant.id) : 0;
+  const checkoutSummary = getSummary(checkoutDeliveryFee);
+  const hasValidAddress = isValidDeliveryAddress(deliveryAddress);
+  const checkoutButtonLabel = checkoutLoading
+    ? 'Placing order...'
+    : !cartItems.length
+      ? 'Add items to checkout'
+      : !hasValidAddress
+        ? 'Enter delivery address'
+        : 'Proceed to Checkout';
+  const addressHelperText = !cartItems.length
+    ? 'Add items first to unlock checkout and delivery details.'
+    : hasValidAddress
+      ? 'This address will be used for delivery and order confirmation.'
+      : 'Enter at least 6 characters for a complete delivery address.';
+  const addressHelperClassName = !cartItems.length || hasValidAddress
+    ? 'discover-note'
+    : 'discover-error';
+
   const fullName = session?.user?.user_metadata?.full_name || session?.user?.phone || 'Hey User';
   const firstName = fullName.split(' ')[0] || fullName;
 
   const handleOpenRestaurant = (restaurantId) => {
     setActiveRestaurantId(restaurantId);
     setScreen('restaurant');
+  };
+
+  const handleOpenCartScreen = () => {
+    if (cartRestaurant?.id) {
+      setActiveRestaurantId(cartRestaurant.id);
+      setScreen('restaurant');
+      return;
+    }
+
+    if (activeRestaurant?.id) {
+      setScreen('restaurant');
+    }
+  };
+
+  const handleCheckout = async () => {
+    if (!cartItems.length || !cartRestaurant?.id || checkoutLoading) {
+      return;
+    }
+
+    if (!hasValidAddress) {
+      setCheckoutMessage('Please enter a complete delivery address.');
+      return;
+    }
+
+    const normalizedAddress = normalizeDeliveryAddress(deliveryAddress);
+
+    setCheckoutLoading(true);
+    setCheckoutMessage('');
+    setCheckoutSuccess(null);
+
+    const { data, error: checkoutError } = await createCheckoutOrder(supabase, {
+      customerId: session?.user?.id,
+      foodPlaceId: cartRestaurant.id,
+      deliveryAddress: normalizedAddress,
+      deliveryFee: checkoutDeliveryFee,
+      cartItems,
+    });
+
+    if (checkoutError) {
+      setCheckoutMessage(checkoutError.message || 'Could not place order. Please try again.');
+    } else {
+      setCheckoutSuccess({
+        orderId: data?.orderId || '',
+        itemCount: data?.itemCount ?? checkoutSummary.itemCount,
+        subtotal: data?.subtotal ?? checkoutSummary.subtotal,
+        deliveryFee: data?.deliveryFee ?? checkoutDeliveryFee,
+        totalAmount: data?.totalAmount ?? checkoutSummary.total,
+        restaurantName: cartRestaurant?.name || '',
+      });
+      setCheckoutMessage('');
+      clearCart();
+    }
+
+    setCheckoutLoading(false);
   };
 
   return (
@@ -248,6 +412,14 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
                 Main page
               </button>
             )}
+            <button
+              className="discover-cart-chip"
+              type="button"
+              onClick={handleOpenCartScreen}
+              disabled={!activeRestaurant && !cartRestaurant}
+            >
+              Cart <span>{itemCount}</span>
+            </button>
             <button className="discover-logout" onClick={onLogout}>
               Logout
             </button>
@@ -258,11 +430,11 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
       <section className="discover-stage">
         <header className="discover-stage-head">
           <p className="discover-kicker">Hey {firstName}</p>
-          <h1>{screen === 'browse' ? 'Browse restaurants' : activeRestaurant?.name || 'Menu view'}</h1>
+          <h1>{screen === 'browse' ? 'Browse restaurants' : activeRestaurant?.name || 'Menu and cart'}</h1>
           <p className="discover-subtitle">
             {screen === 'browse'
-              ? 'Pick a restaurant and open its menu in a more focused customer view.'
-              : 'Browse the full menu and check item details without leaving the page.'}
+              ? 'Pick a restaurant and open its menu with checkout in one focused screen.'
+              : 'Add items, review your cart, and checkout without leaving this view.'}
           </p>
         </header>
 
@@ -279,11 +451,17 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
               <strong>{screen === 'browse' ? filteredRestaurants.length : activeMenuItems.length}</strong>
             </article>
             <article>
-              <span>Delivery Fee</span>
-              <strong>{activeRestaurant ? formatNpr(getDeliveryFee(activeRestaurant.id)) : '--'}</strong>
+              <span>Cart Total</span>
+              <strong>{formatNpr(checkoutSummary.total)}</strong>
             </article>
           </div>
         </div>
+
+        {!!cartNotice && (
+          <div className="discover-notice">
+            {cartNotice}
+          </div>
+        )}
       </section>
 
       <section className="discover-layout">
@@ -357,54 +535,169 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
             {!activeRestaurant ? (
               <div className="discover-empty">
                 <h3>Choose a restaurant</h3>
-                <p>Select a restaurant to open its menu.</p>
+                <p>Select a restaurant to open menu and cart.</p>
                 <button type="button" className="discover-empty-btn" onClick={() => setScreen('browse')}>
                   Browse restaurants
                 </button>
               </div>
             ) : (
-              <section className="discover-menu" id="discover-menu-panel">
-                <div className="discover-hero">
-                  <img
-                    src={activeRestaurant.image_url || activeRestaurant.menu_items?.[0]?.image_url || Logo}
-                    alt={activeRestaurant.name}
-                  />
-                  <div>
-                    <h2>{activeRestaurant.name}</h2>
-                    <p>{activeRestaurant.address || 'Kathmandu Valley'}</p>
-                    <div className="discover-hero-meta">
-                      <span>
-                        <IconStar />
-                        {getRestaurantRating(activeRestaurant.id)} rating
-                      </span>
-                      <span>
-                        <IconMenu />
-                        {activeRestaurant.menu_items?.length || 0} items
-                      </span>
+              <div className="discover-workbench-grid">
+                <section className="discover-menu" id="discover-menu-panel">
+                  <div className="discover-hero">
+                    <img
+                      src={activeRestaurant.image_url || activeRestaurant.menu_items?.[0]?.image_url || Logo}
+                      alt={activeRestaurant.name}
+                    />
+                    <div>
+                      <h2>{activeRestaurant.name}</h2>
+                      <p>{activeRestaurant.address || 'Kathmandu Valley'}</p>
+                      <div className="discover-hero-meta">
+                        <span>
+                          <IconStar />
+                          {getRestaurantRating(activeRestaurant.id)} rating
+                        </span>
+                        <span>
+                          <IconMenu />
+                          {activeRestaurant.menu_items?.length || 0} items
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="discover-offer">
-                  <strong>5% OFF</strong>
-                  <span>on your first 3 orders from this restaurant.</span>
-                </div>
-
-                <div className="discover-menu-head">
-                  <h3>Menu</h3>
-                  <span>{activeMenuItems.length} results</span>
-                </div>
-
-                {!activeMenuItems.length ? (
-                  <p className="discover-note">No menu items match your search.</p>
-                ) : (
-                  <div className="discover-menu-grid">
-                    {activeMenuItems.map((item) => (
-                      <MenuItemCard key={item.id} item={item} />
-                    ))}
+                  <div className="discover-offer">
+                    <strong>5% OFF</strong>
+                    <span>on your first 3 orders from this restaurant.</span>
                   </div>
-                )}
-              </section>
+
+                  <div className="discover-menu-head">
+                    <h3>Menu</h3>
+                    <span>{activeMenuItems.length} results</span>
+                  </div>
+
+                  {!activeMenuItems.length ? (
+                    <p className="discover-note">No menu items match your search.</p>
+                  ) : (
+                    <div className="discover-menu-grid">
+                      {activeMenuItems.map((item) => {
+                        const quantity = menuQuantityMap[item.id] || 0;
+
+                        return (
+                          <MenuItemCard
+                            key={item.id}
+                            item={item}
+                            quantity={quantity}
+                            canAdd={canAddFromActiveRestaurant}
+                            onAdd={() => incrementItem(activeRestaurant, item)}
+                            onIncrease={() => incrementItem(activeRestaurant, item)}
+                            onDecrease={() => decrementItem(activeRestaurant, item)}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+
+                <aside className="discover-cart" id="discover-cart-panel">
+                  <div className="discover-cart-head">
+                    <h3>Cart</h3>
+                    <button type="button" onClick={clearCart} disabled={!cartItems.length}>Clear</button>
+                  </div>
+
+                  {!!checkoutSuccess && (
+                    <>
+                      <div className="discover-cart-empty">
+                        <p>Order placed successfully.</p>
+                        <span>
+                          Order #{String(checkoutSuccess.orderId).slice(0, 8) || 'pending'}
+                          {checkoutSuccess.restaurantName ? ` · ${checkoutSuccess.restaurantName}` : ''}
+                        </span>
+                      </div>
+
+                      <div className="discover-bill">
+                        <div><span>Items</span><strong>{checkoutSuccess.itemCount}</strong></div>
+                        <div><span>Subtotal</span><strong>{formatNpr(checkoutSuccess.subtotal)}</strong></div>
+                        <div><span>Delivery</span><strong>{formatNpr(checkoutSuccess.deliveryFee)}</strong></div>
+                        <div className="discover-bill-total">
+                          <span>Total</span>
+                          <strong>{formatNpr(checkoutSuccess.totalAmount)}</strong>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {!cartItems.length ? (
+                    <div className="discover-cart-empty">
+                      <p>{checkoutSuccess ? 'Ready for your next order.' : 'Your cart is empty.'}</p>
+                      <span>
+                        {checkoutSuccess
+                          ? 'Add items from one restaurant to start a new cart.'
+                          : 'Add items from one restaurant to see delivery fees and checkout here.'}
+                      </span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="discover-cart-restaurant">
+                        <strong>{cartRestaurant?.name}</strong>
+                        <span>{cartRestaurant?.address || 'Kathmandu Valley'}</span>
+                      </div>
+
+                      <div className="discover-cart-list">
+                        {cartItems.map((item) => (
+                          <CartLineItem
+                            key={item.id}
+                            item={item}
+                            onIncrease={() => incrementItem(cartRestaurant, item)}
+                            onDecrease={() => decrementItem(cartRestaurant, item)}
+                          />
+                        ))}
+                      </div>
+
+                      <div className="discover-bill">
+                        <div><span>Items</span><strong>{checkoutSummary.itemCount}</strong></div>
+                        <div><span>Subtotal</span><strong>{formatNpr(checkoutSummary.subtotal)}</strong></div>
+                        <div><span>Delivery</span><strong>{formatNpr(checkoutSummary.deliveryFee)}</strong></div>
+                        <div className="discover-bill-total"><span>Total</span><strong>{formatNpr(checkoutSummary.total)}</strong></div>
+                      </div>
+
+                      <label className="discover-address">
+                        <span>Delivery address</span>
+                        <textarea
+                          value={deliveryAddress}
+                          onChange={(event) => {
+                            setDeliveryAddress(event.target.value);
+                            if (checkoutMessage) {
+                              setCheckoutMessage('');
+                            }
+                          }}
+                          rows={3}
+                          placeholder="Enter delivery address"
+                          aria-invalid={cartItems.length > 0 && !hasValidAddress}
+                        />
+                      </label>
+
+                      <p className={addressHelperClassName}>{addressHelperText}</p>
+
+                      <button
+                        type="button"
+                        className="discover-checkout"
+                        onClick={handleCheckout}
+                        disabled={checkoutLoading || !cartItems.length || !hasValidAddress}
+                      >
+                        {checkoutButtonLabel}
+                      </button>
+
+                      {!!checkoutMessage && (
+                        <p
+                          className="discover-checkout-message"
+                          data-state={checkoutSuccess ? 'success' : 'error'}
+                        >
+                          {checkoutMessage}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </aside>
+              </div>
             )}
           </section>
         )}
