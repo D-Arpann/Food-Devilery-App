@@ -9,7 +9,12 @@ import {
   View,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { fetchRestaurantFeed, logout } from '@repo/api';
+import {
+  createCheckoutOrder,
+  fetchCustomerOrders,
+  fetchRestaurantFeed,
+  logout,
+} from '@repo/api';
 import { useCart } from '@repo/ui';
 import {
   filterMenuItems,
@@ -305,6 +310,223 @@ function PlaceholderPane({ title, subtitle }) {
   );
 }
 
+function formatOrderDate(value) {
+  if (!value) {
+    return '--/--/----';
+  }
+
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return '--/--/----';
+  }
+
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(parsedDate);
+}
+
+function formatOrderTime(value) {
+  if (!value) {
+    return '--:--';
+  }
+
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return '--:--';
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: false,
+  }).format(parsedDate);
+}
+
+function getOrderDisplayId(orderId) {
+  if (!orderId) {
+    return '------';
+  }
+
+  const compact = String(orderId).replace(/[^a-zA-Z0-9]/g, '');
+  return compact.slice(0, 6);
+}
+
+function getOrderStatusLabel(order) {
+  if (order?.status_label) {
+    return order.status_label;
+  }
+
+  switch (order?.status) {
+    case 'accepted':
+      return 'Restaurant accepted';
+    case 'cooking':
+      return 'Cooking';
+    case 'ready_for_pickup':
+      return 'Ready for pickup';
+    case 'picked_up':
+      return 'On the way';
+    case 'arrived':
+      return 'Arrived';
+    case 'delivered':
+      return 'Delivered';
+    case 'cancelled':
+      return 'Cancelled';
+    case 'placed':
+    default:
+      return 'Order placed';
+  }
+}
+
+function getOrderEtaLabel(order) {
+  if (order?.eta_label) {
+    return order.eta_label;
+  }
+
+  switch (order?.status) {
+    case 'accepted':
+    case 'cooking':
+      return '25 minutes';
+    case 'ready_for_pickup':
+      return '15 minutes';
+    case 'picked_up':
+    case 'arrived':
+      return '10 minutes';
+    case 'delivered':
+      return 'Completed';
+    case 'cancelled':
+      return 'Cancelled';
+    case 'placed':
+    default:
+      return '20 minutes';
+  }
+}
+
+function normalizeOrderRecord(order) {
+  if (!order) {
+    return null;
+  }
+
+  return {
+    ...order,
+    order_items: Array.isArray(order.order_items) ? order.order_items : [],
+  };
+}
+
+function mergeOrderRecords(primaryOrders = [], secondaryOrders = []) {
+  const merged = new Map();
+
+  [...primaryOrders, ...secondaryOrders].forEach((order) => {
+    const normalizedOrder = normalizeOrderRecord(order);
+    if (!normalizedOrder?.id) {
+      return;
+    }
+
+    if (!merged.has(normalizedOrder.id)) {
+      merged.set(normalizedOrder.id, normalizedOrder);
+      return;
+    }
+
+    const current = merged.get(normalizedOrder.id);
+    merged.set(normalizedOrder.id, {
+      ...current,
+      ...normalizedOrder,
+      food_place: normalizedOrder.food_place || current.food_place,
+      order_items: normalizedOrder.order_items?.length ? normalizedOrder.order_items : current.order_items,
+    });
+  });
+
+  return Array.from(merged.values()).sort((left, right) => {
+    const leftTime = new Date(left.created_at || 0).getTime();
+    const rightTime = new Date(right.created_at || 0).getTime();
+    return rightTime - leftTime;
+  });
+}
+
+function createOptimisticOrderRecord({
+  orderId,
+  restaurant,
+  items,
+  subtotal,
+  deliveryFee,
+  totalAmount,
+  createdAt,
+}) {
+  return {
+    id: orderId,
+    food_place_id: restaurant?.id || null,
+    subtotal,
+    delivery_fee: deliveryFee,
+    total_amount: totalAmount,
+    status: 'placed',
+    status_label: 'Restaurant received your order',
+    eta_label: '20 minutes',
+    created_at: createdAt,
+    food_place: restaurant
+      ? {
+        id: restaurant.id,
+        name: restaurant.name,
+        address: restaurant.address,
+        image_url: restaurant.image_url,
+      }
+      : null,
+    order_items: (items || []).map((item) => ({
+      id: `${orderId}-${item.id}`,
+      item_name: item.name,
+      item_price: item.price,
+      quantity: item.quantity,
+    })),
+  };
+}
+
+function OrderHistoryCard({ order }) {
+  const restaurantName = order?.food_place?.name || 'Restaurant';
+  const itemLines = order?.order_items || [];
+
+  return (
+    <View style={styles.orderHistoryCard}>
+      <View style={styles.orderHistoryTopRow}>
+        <View style={styles.orderHistoryLead}>
+          <View style={styles.orderHistoryAvatar}>
+            <MaterialCommunityIcons name="chef-hat" size={20} color="#8D867E" />
+          </View>
+          <View style={styles.orderHistoryLeadLine} />
+        </View>
+
+        <View style={styles.orderHistoryMeta}>
+          <Text style={styles.orderHistoryRestaurant} numberOfLines={1}>
+            {restaurantName}
+          </Text>
+          <Text style={styles.orderHistoryMetaText}>
+            Order id: {getOrderDisplayId(order?.id)}
+          </Text>
+          <View style={styles.orderHistoryDateRow}>
+            <Text style={styles.orderHistoryMetaText}>{formatOrderDate(order?.created_at)}</Text>
+            <Text style={styles.orderHistoryTime}>{formatOrderTime(order?.created_at)}</Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.orderHistorySummaryShell}>
+        <View style={styles.orderHistorySummaryCard}>
+          {itemLines.map((item) => (
+            <Text key={item.id || `${item.item_name}-${item.quantity}`} style={styles.orderHistoryItemLine}>
+              {item.item_name} x {item.quantity}
+            </Text>
+          ))}
+          <Text style={styles.orderHistoryTotal}>Total: {formatNpr(order?.total_amount || 0)}</Text>
+        </View>
+
+        <View style={styles.orderHistorySummaryCard}>
+          <Text style={styles.orderHistoryStatusLine}>ETA: {getOrderEtaLabel(order)}</Text>
+          <Text style={styles.orderHistoryStatusLine}>Status: {getOrderStatusLabel(order)}</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset = 0 }) {
   const [feed, setFeed] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -314,13 +536,18 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
   const [selectedRestaurantId, setSelectedRestaurantId] = useState(null);
   const [menuSelection, setMenuSelection] = useState({ itemId: null, quantity: 0 });
   const [logoutLoading, setLogoutLoading] = useState(false);
-  const [cartMessage, setCartMessage] = useState('');
+  const [deliveryAddress] = useState('Naxal, Kathmandu');
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutMessage, setCheckoutMessage] = useState('');
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState('');
+  const [remoteOrders, setRemoteOrders] = useState([]);
+  const [localOrders, setLocalOrders] = useState([]);
 
   const {
     restaurant: cartRestaurant,
     items: cartItems,
     notice: cartNotice,
-    itemCount,
     incrementItem,
     decrementItem,
     clearCart,
@@ -374,13 +601,48 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
   }, [cartNotice, dismissNotice]);
 
   useEffect(() => {
-    if (!cartItems.length && cartMessage) {
-      setCartMessage('');
-    }
-  }, [cartItems.length, cartMessage]);
+    let mounted = true;
+
+    const loadOrders = async () => {
+      if (activeTab !== TAB_ORDERS || !session?.user?.id) {
+        return;
+      }
+
+      setOrdersLoading(true);
+      setOrdersError('');
+
+      const { data, error: customerOrdersError } = await fetchCustomerOrders(supabase, session.user.id, { limit: 10 });
+
+      if (!mounted) {
+        return;
+      }
+
+      if (customerOrdersError) {
+        setOrdersError('Could not load your orders right now.');
+      } else {
+        setRemoteOrders((data || []).map(normalizeOrderRecord).filter(Boolean));
+      }
+
+      setOrdersLoading(false);
+    };
+
+    loadOrders();
+
+    return () => {
+      mounted = false;
+    };
+  }, [activeTab, session?.user?.id, supabase]);
 
   const userName = session?.user?.user_metadata?.full_name || session?.user?.phone || 'User';
   const firstName = userName.split(' ')[0] || userName;
+  const mergedOrders = useMemo(
+    () => mergeOrderRecords(localOrders, remoteOrders),
+    [localOrders, remoteOrders],
+  );
+  const trackedOrder = useMemo(
+    () => mergedOrders.find((order) => !['delivered', 'cancelled'].includes(order?.status)) || null,
+    [mergedOrders],
+  );
 
   const filteredRestaurants = useMemo(
     () => filterRestaurantFeed(feed, searchQuery),
@@ -501,7 +763,7 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
     }
 
     setMenuSelection({ itemId: null, quantity: 0 });
-    setCartMessage('');
+    setCheckoutMessage('');
   };
 
   const handleLogout = async () => {
@@ -513,9 +775,47 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
     }
   };
 
-  const showRestaurantMenu = activeTab === TAB_HOME && selectedRestaurantId && selectedRestaurant;
   const cartDeliveryFee = cartRestaurant?.id ? getDeliveryFee(cartRestaurant.id) : 0;
   const cartSummary = getSummary(cartDeliveryFee);
+  const showRestaurantMenu = activeTab === TAB_HOME && selectedRestaurantId && selectedRestaurant;
+
+  const handleCheckout = async () => {
+    if (!cartItems.length || !cartRestaurant?.id || checkoutLoading) {
+      return;
+    }
+
+    setCheckoutLoading(true);
+    setCheckoutMessage('');
+
+    const { data, error: checkoutError } = await createCheckoutOrder(supabase, {
+      customerId: session?.user?.id,
+      foodPlaceId: cartRestaurant.id,
+      deliveryAddress,
+      deliveryFee: cartDeliveryFee,
+      cartItems,
+    });
+
+    if (checkoutError) {
+      setCheckoutMessage(checkoutError.message || 'Could not confirm your order. Please try again.');
+    } else {
+      const shortOrderId = data?.orderId ? String(data.orderId).slice(0, 8) : '';
+      const optimisticOrder = createOptimisticOrderRecord({
+        orderId: data?.orderId || `order-${Date.now()}`,
+        restaurant: cartRestaurant,
+        items: cartItems,
+        subtotal: data?.subtotal ?? cartSummary.subtotal,
+        deliveryFee: data?.deliveryFee ?? cartDeliveryFee,
+        totalAmount: data?.totalAmount ?? cartSummary.total,
+        createdAt: new Date().toISOString(),
+      });
+      setLocalOrders((current) => mergeOrderRecords([optimisticOrder], current));
+      setCheckoutMessage(`Order placed successfully${shortOrderId ? ` (#${shortOrderId})` : ''}.`);
+      clearCart();
+      setActiveTab(TAB_ORDERS);
+    }
+
+    setCheckoutLoading(false);
+  };
 
   if (showRestaurantMenu) {
     return (
@@ -735,10 +1035,40 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
 
       {activeTab === TAB_ORDERS && (
         <>
-          <PlaceholderPane
-            title="Orders Coming Soon"
-            subtitle="Order tracking will connect once checkout history lands in the next patch."
-          />
+          <ScrollView
+            contentContainerStyle={styles.ordersContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.contentFrame}>
+              <View style={styles.ordersHeader}>
+                <Pressable style={styles.ordersBackButton} onPress={() => setActiveTab(TAB_HOME)}>
+                  <Ionicons name="arrow-back" size={20} color="#1E1E1E" />
+                </Pressable>
+                <Text style={styles.ordersTitle}>Orders</Text>
+              </View>
+
+              {ordersLoading ? (
+                <Text style={styles.helperText}>Loading order tracker...</Text>
+              ) : null}
+              {!ordersLoading && !!ordersError ? (
+                <Text style={styles.errorText}>{ordersError}</Text>
+              ) : null}
+              {!ordersLoading && !ordersError && !trackedOrder ? (
+                <View style={styles.ordersEmptyCard}>
+                  <Text style={styles.ordersEmptyTitle}>No active order</Text>
+                  <Text style={styles.ordersEmptySubtitle}>Checkout a meal and your live order tracker will show up here.</Text>
+                </View>
+              ) : null}
+
+              {!ordersLoading && !ordersError && !!trackedOrder ? (
+                <View style={styles.ordersList}>
+                  <Text style={styles.helperText}>Live order tracker</Text>
+                  <OrderHistoryCard order={trackedOrder} />
+                </View>
+              ) : null}
+            </View>
+          </ScrollView>
           <BottomNav activeTab={activeTab} onChange={setActiveTab} bottomInset={bottomInset} />
         </>
       )}
@@ -819,21 +1149,27 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
                   </View>
 
                   <Pressable
-                    style={[styles.checkoutButton, styles.checkoutButtonDisabled]}
-                    onPress={() => setCartMessage('Checkout submission lands in the next patch.')}
+                    style={[
+                      styles.checkoutButton,
+                      checkoutLoading && styles.checkoutButtonDisabled,
+                    ]}
+                    onPress={handleCheckout}
+                    disabled={checkoutLoading}
                   >
                     <View style={styles.checkoutButtonInner}>
                       <View style={styles.checkoutButtonPattern} />
                       <FoodPatternLayer color="rgba(214, 96, 24, 0.42)" />
                       <View style={styles.checkoutButtonContent}>
                         <MaterialCommunityIcons name="cart-check" size={18} color="#FFFFFF" />
-                        <Text style={styles.checkoutButtonText}>Checkout next</Text>
+                        <Text style={styles.checkoutButtonText}>
+                          {checkoutLoading ? 'Placing order...' : 'Proceed'}
+                        </Text>
                       </View>
                     </View>
                   </Pressable>
 
-                  {!!cartMessage && (
-                    <Text style={styles.checkoutMessage}>{cartMessage}</Text>
+                  {!!checkoutMessage && (
+                    <Text style={styles.checkoutMessage}>{checkoutMessage}</Text>
                   )}
                 </View>
               </View>

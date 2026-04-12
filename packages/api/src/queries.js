@@ -86,6 +86,87 @@ export async function fetchRestaurantFeed(client, options = {}) {
   }
 }
 
+export async function fetchCustomerOrders(client, customerId, options = {}) {
+  const { limit = 12 } = options;
+
+  try {
+    if (!customerId) {
+      throw new Error('Missing customer id for orders.');
+    }
+
+    let ordersQuery = client
+      .from(TABLES.ORDERS)
+      .select('id, food_place_id, subtotal, delivery_fee, total_amount, status, delivery_address, created_at, updated_at')
+      .eq('customer_id', customerId)
+      .order('created_at', { ascending: false });
+
+    if (limit > 0) {
+      ordersQuery = ordersQuery.limit(limit);
+    }
+
+    const { data: orders, error: ordersError } = await ordersQuery;
+    if (ordersError) {
+      throw ordersError;
+    }
+
+    const normalizedOrders = orders || [];
+    if (!normalizedOrders.length) {
+      return { data: [], error: null };
+    }
+
+    const placeIds = [...new Set(normalizedOrders.map((order) => order.food_place_id).filter(Boolean))];
+    const orderIds = normalizedOrders.map((order) => order.id).filter(Boolean);
+
+    const [{ data: places, error: placesError }, { data: orderItems, error: itemsError }] = await Promise.all([
+      placeIds.length
+        ? client
+          .from(TABLES.FOOD_PLACES)
+          .select('id, name, description, address, image_url')
+          .in('id', placeIds)
+        : Promise.resolve({ data: [], error: null }),
+      orderIds.length
+        ? client
+          .from(TABLES.ORDER_ITEMS)
+          .select('id, order_id, item_name, item_price, quantity')
+          .in('order_id', orderIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+
+    if (placesError) {
+      throw placesError;
+    }
+
+    if (itemsError) {
+      throw itemsError;
+    }
+
+    const placesById = (places || []).reduce((acc, place) => {
+      acc[place.id] = place;
+      return acc;
+    }, {});
+
+    const itemsByOrderId = (orderItems || []).reduce((acc, item) => {
+      if (!acc[item.order_id]) {
+        acc[item.order_id] = [];
+      }
+      acc[item.order_id].push(item);
+      return acc;
+    }, {});
+
+    return {
+      data: normalizedOrders.map((order) => ({
+        ...order,
+        food_place: placesById[order.food_place_id] || null,
+        order_items: itemsByOrderId[order.id] || [],
+      })),
+      error: null,
+    };
+  } catch (error) {
+    console.error('Error fetching customer orders:', error);
+    return { data: null, error };
+  }
+}
+
 export async function createOrder(client, orderPayload) {
   try {
     const { data, error } = await client

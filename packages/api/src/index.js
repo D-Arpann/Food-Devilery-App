@@ -11,6 +11,7 @@ export {
   fetchActiveRestaurants,
   fetchActiveMenu,
   fetchRestaurantFeed,
+  fetchCustomerOrders,
   createOrder,
   createCheckoutOrder,
   updateOrderStatus,
