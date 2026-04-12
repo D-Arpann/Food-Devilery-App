@@ -639,8 +639,8 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
     () => mergeOrderRecords(localOrders, remoteOrders),
     [localOrders, remoteOrders],
   );
-  const trackedOrder = useMemo(
-    () => mergedOrders.find((order) => !['delivered', 'cancelled'].includes(order?.status)) || null,
+  const visibleOrders = useMemo(
+    () => mergedOrders.filter((order) => order?.status !== 'cancelled'),
     [mergedOrders],
   );
 
@@ -1054,17 +1054,18 @@ export function DiscoveryScreen({ session, supabase, topInset = 0, bottomInset =
               {!ordersLoading && !!ordersError ? (
                 <Text style={styles.errorText}>{ordersError}</Text>
               ) : null}
-              {!ordersLoading && !ordersError && !trackedOrder ? (
+              {!ordersLoading && !ordersError && !visibleOrders.length ? (
                 <View style={styles.ordersEmptyCard}>
-                  <Text style={styles.ordersEmptyTitle}>No active order</Text>
-                  <Text style={styles.ordersEmptySubtitle}>Checkout a meal and your live order tracker will show up here.</Text>
+                  <Text style={styles.ordersEmptyTitle}>No orders yet</Text>
+                  <Text style={styles.ordersEmptySubtitle}>Checkout a meal and it will show up here.</Text>
                 </View>
               ) : null}
 
-              {!ordersLoading && !ordersError && !!trackedOrder ? (
+              {!ordersLoading && !ordersError && !!visibleOrders.length ? (
                 <View style={styles.ordersList}>
-                  <Text style={styles.helperText}>Live order tracker</Text>
-                  <OrderHistoryCard order={trackedOrder} />
+                  {visibleOrders.map((order) => (
+                    <OrderHistoryCard key={order.id} order={order} />
+                  ))}
                 </View>
               ) : null}
             </View>
