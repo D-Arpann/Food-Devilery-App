@@ -593,6 +593,63 @@ function buildSessionCustomerSettings(session) {
   };
 }
 
+function createAddressDraft(address) {
+  return {
+    label: address?.label || '',
+    address: address?.address || '',
+  };
+}
+
+function createLocalAddressId() {
+  return `address-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+function ProfileAddressCard({
+  address,
+  isDefault,
+  onSetDefault,
+  onEdit,
+  onDelete,
+  canDelete,
+}) {
+  return (
+    <View style={[styles.profileAddressCard, isDefault && styles.profileAddressCardActive]}>
+      <View style={styles.profileAddressCardHead}>
+        <View style={styles.profileAddressCardTitleWrap}>
+          <Text style={styles.profileAddressCardTitle}>{address.label}</Text>
+          {isDefault ? (
+            <View style={styles.profileDefaultBadge}>
+              <Ionicons name="checkmark-circle" size={13} color="#F8964F" />
+              <Text style={styles.profileDefaultBadgeText}>Default</Text>
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.profileAddressCardActions}>
+          {!isDefault ? (
+            <Pressable style={styles.profileAddressAction} onPress={onSetDefault}>
+              <Ionicons name="radio-button-on-outline" size={18} color="#F8964F" />
+            </Pressable>
+          ) : null}
+          <Pressable style={styles.profileAddressAction} onPress={onEdit}>
+            <Ionicons name="create-outline" size={18} color="#1E1E1E" />
+          </Pressable>
+          {canDelete ? (
+            <Pressable style={styles.profileAddressAction} onPress={onDelete}>
+              <Ionicons name="trash-outline" size={18} color="#D66018" />
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+
+      <View style={styles.profileAddressLine}>
+        <Ionicons name="location" size={15} color="#8C6B56" />
+        <Text style={styles.profileAddressText}>{address.address}</Text>
+      </View>
+    </View>
+  );
+}
+
 export function DiscoveryScreen({
   session,
   supabase,
@@ -631,6 +688,10 @@ export function DiscoveryScreen({
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
   const [profileError, setProfileError] = useState('');
+  const [addressDraft, setAddressDraft] = useState(createAddressDraft());
+  const [editingAddressId, setEditingAddressId] = useState('');
+  const [addressSaving, setAddressSaving] = useState(false);
+  const [addressError, setAddressError] = useState('');
 
   const {
     restaurant: cartRestaurant,
@@ -1022,6 +1083,149 @@ export function DiscoveryScreen({
     }
 
     setProfileSaving(false);
+  };
+
+  const handleSaveAddressDraft = async () => {
+    const nextLabel = String(addressDraft.label || '').trim();
+    const nextAddress = normalizeDeliveryAddress(addressDraft.address, '');
+
+    if (!nextLabel) {
+      setAddressError('Add a short label for this address.');
+      return;
+    }
+
+    if (!isValidDeliveryAddress(nextAddress)) {
+      setAddressError('Enter a complete delivery address.');
+      return;
+    }
+
+    setAddressSaving(true);
+    setAddressError('');
+    setProfileError('');
+    setProfileMessage('');
+
+    const baseAddresses = editingAddressId
+      ? profileSettings.addresses.map((entry) => (
+        entry.id === editingAddressId
+          ? {
+            ...entry,
+            label: nextLabel,
+            address: nextAddress,
+          }
+          : entry
+      ))
+      : [
+        ...profileSettings.addresses,
+        {
+          id: createLocalAddressId(),
+          label: nextLabel,
+          address: nextAddress,
+        },
+      ];
+
+    const nextDefaultAddressId = profileSettings.defaultAddressId || baseAddresses[0]?.id || '';
+    const { error: saveError, temporary } = await commitProfileSettings({
+      ...profileSettings,
+      addresses: baseAddresses,
+      defaultAddressId: nextDefaultAddressId,
+    });
+
+    if (saveError) {
+      setAddressError(saveError.message || 'Could not save this address.');
+    } else {
+      setAddressDraft(createAddressDraft());
+      setEditingAddressId('');
+      setProfileMessage(
+        temporary
+          ? 'Temporary login mode: address changes are saved only for this session.'
+          : editingAddressId
+            ? 'Address updated.'
+            : 'Address added.',
+      );
+    }
+
+    setAddressSaving(false);
+  };
+
+  const handleEditAddress = (address) => {
+    setEditingAddressId(address.id);
+    setAddressDraft(createAddressDraft(address));
+    setAddressError('');
+    setProfileMessage('');
+  };
+
+  const handleCancelAddressEdit = () => {
+    setEditingAddressId('');
+    setAddressDraft(createAddressDraft());
+    setAddressError('');
+  };
+
+  const handleSetDefaultAddress = async (addressId) => {
+    if (!addressId || addressId === profileSettings.defaultAddressId) {
+      return;
+    }
+
+    setAddressSaving(true);
+    setAddressError('');
+    setProfileError('');
+    setProfileMessage('');
+
+    const { error: saveError, temporary } = await commitProfileSettings({
+      ...profileSettings,
+      defaultAddressId: addressId,
+    });
+
+    if (saveError) {
+      setAddressError(saveError.message || 'Could not update your default address.');
+    } else {
+      setProfileMessage(
+        temporary
+          ? 'Temporary login mode: default address changed for this session.'
+          : 'Default address updated.',
+      );
+    }
+
+    setAddressSaving(false);
+  };
+
+  const handleDeleteAddress = async (addressId) => {
+    const nextAddresses = profileSettings.addresses.filter((entry) => entry.id !== addressId);
+    if (!nextAddresses.length) {
+      setAddressError('Keep at least one saved address for checkout.');
+      return;
+    }
+
+    setAddressSaving(true);
+    setAddressError('');
+    setProfileError('');
+    setProfileMessage('');
+
+    const nextDefaultAddressId = resolveDefaultSavedAddressId(
+      nextAddresses,
+      profileSettings.defaultAddressId === addressId ? '' : profileSettings.defaultAddressId,
+    );
+
+    const { error: saveError, temporary } = await commitProfileSettings({
+      ...profileSettings,
+      addresses: nextAddresses,
+      defaultAddressId: nextDefaultAddressId,
+    });
+
+    if (saveError) {
+      setAddressError(saveError.message || 'Could not remove this address.');
+    } else {
+      if (editingAddressId === addressId) {
+        setEditingAddressId('');
+        setAddressDraft(createAddressDraft());
+      }
+      setProfileMessage(
+        temporary
+          ? 'Temporary login mode: address removed for this session.'
+          : 'Address removed.',
+      );
+    }
+
+    setAddressSaving(false);
   };
 
   const handleCheckout = async () => {
@@ -1485,7 +1689,7 @@ export function DiscoveryScreen({
                 <View style={styles.profileHeroText}>
                   <Text style={styles.profileTitle}>Your Profile</Text>
                   <Text style={styles.profileSubtitle}>
-                    Keep your name, phone number, and password up to date.
+                    Keep your details and default delivery address up to date.
                   </Text>
                 </View>
               </View>
@@ -1576,6 +1780,102 @@ export function DiscoveryScreen({
                   loading={profileSaving}
                   style={styles.profileFullButton}
                 />
+              </View>
+
+              <View style={styles.profileSectionCard}>
+                <View style={styles.profileSectionHead}>
+                  <Text style={styles.profileSectionTitle}>Saved addresses</Text>
+                  <View style={styles.profileCountChip}>
+                    <Ionicons name="location-outline" size={13} color="#D67D3B" />
+                    <Text style={styles.profileCountChipText}>
+                      {profileSettings.addresses.length}
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={styles.profileSectionNote}>
+                  Choose a default address for quick checkout and manage the rest here.
+                </Text>
+
+                <View style={styles.profileAddressList}>
+                  {profileSettings.addresses.map((address) => (
+                    <ProfileAddressCard
+                      key={address.id}
+                      address={address}
+                      isDefault={address.id === profileSettings.defaultAddressId}
+                      onSetDefault={() => handleSetDefaultAddress(address.id)}
+                      onEdit={() => handleEditAddress(address)}
+                      onDelete={() => handleDeleteAddress(address.id)}
+                      canDelete={profileSettings.addresses.length > 1}
+                    />
+                  ))}
+                </View>
+
+                <View style={styles.profileAddressFormCard}>
+                  <View style={styles.profileAddressFormHead}>
+                    <Text style={styles.profileAddressFormTitle}>
+                      {editingAddressId ? 'Edit address' : 'Add a new address'}
+                    </Text>
+                    {editingAddressId ? (
+                      <Pressable style={styles.profileAddressReset} onPress={handleCancelAddressEdit}>
+                        <Ionicons name="close" size={16} color="#1E1E1E" />
+                      </Pressable>
+                    ) : null}
+                  </View>
+
+                  <Input
+                    label="Label"
+                    placeholder="Home, Office, Hostel..."
+                    value={addressDraft.label}
+                    onChangeText={(value) => {
+                      setAddressDraft((current) => ({ ...current, label: value }));
+                      if (addressError) {
+                        setAddressError('');
+                      }
+                    }}
+                  />
+
+                  <Text style={styles.profileTextareaLabel}>Address</Text>
+                  <View style={styles.profileTextareaField}>
+                    <TextInput
+                      multiline
+                      numberOfLines={3}
+                      placeholder="Street, area, and nearby landmark"
+                      placeholderTextColor="#8E8781"
+                      value={addressDraft.address}
+                      onChangeText={(value) => {
+                        setAddressDraft((current) => ({ ...current, address: value }));
+                        if (addressError) {
+                          setAddressError('');
+                        }
+                      }}
+                      style={styles.profileTextareaInput}
+                      textAlignVertical="top"
+                    />
+                  </View>
+
+                  {!!addressError ? (
+                    <Text style={styles.profileInlineError}>{addressError}</Text>
+                  ) : null}
+
+                  <View style={styles.profileAddressButtonRow}>
+                    {editingAddressId ? (
+                      <Button
+                        title="Cancel"
+                        variant="outline"
+                        onPress={handleCancelAddressEdit}
+                        style={styles.profileSecondaryButton}
+                      />
+                    ) : null}
+
+                    <Button
+                      title={editingAddressId ? 'Update address' : 'Save address'}
+                      onPress={handleSaveAddressDraft}
+                      loading={addressSaving}
+                      style={editingAddressId ? styles.profileAddressSaveButton : styles.profileFullButton}
+                    />
+                  </View>
+                </View>
               </View>
 
             </View>
@@ -2936,5 +3236,153 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     paddingTop: 10,
     paddingBottom: 2,
+  },
+  profileSecondaryButton: {
+    flex: 1,
+  },
+  profileAddressList: {
+    gap: 12,
+  },
+  profileAddressCard: {
+    borderRadius: 16,
+    backgroundColor: '#FFF7F1',
+    borderWidth: 1,
+    borderColor: '#F6DECF',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+  },
+  profileAddressCardActive: {
+    backgroundColor: '#FFEBDD',
+    borderColor: '#F8C49C',
+  },
+  profileAddressCardHead: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  profileAddressCardTitleWrap: {
+    flex: 1,
+    gap: 8,
+  },
+  profileAddressCardTitle: {
+    color: '#1E1E1E',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 15,
+    lineHeight: 18,
+  },
+  profileDefaultBadge: {
+    alignSelf: 'flex-start',
+    minHeight: 24,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#F6D0B3',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  profileDefaultBadgeText: {
+    color: '#D66018',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 11,
+    lineHeight: 13,
+  },
+  profileAddressCardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  profileAddressAction: {
+    width: 32,
+    height: 32,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#F2DFD2',
+  },
+  profileAddressLine: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  profileAddressText: {
+    flex: 1,
+    color: '#5E5E5E',
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  profileAddressFormCard: {
+    borderRadius: 16,
+    backgroundColor: '#FFF7F1',
+    borderWidth: 1,
+    borderColor: '#F6DECF',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 12,
+  },
+  profileAddressFormHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  profileAddressFormTitle: {
+    color: '#1E1E1E',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 15,
+    lineHeight: 18,
+  },
+  profileAddressReset: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#F2DFD2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileTextareaLabel: {
+    color: '#333232',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 15,
+    lineHeight: 18,
+    paddingLeft: 2,
+  },
+  profileTextareaField: {
+    minHeight: 98,
+    borderRadius: 15,
+    backgroundColor: '#F4E5D8',
+    borderWidth: 2,
+    borderColor: '#E7D8CA',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  profileTextareaInput: {
+    flex: 1,
+    color: '#1E1E1E',
+    fontSize: 15,
+    fontFamily: 'Outfit_500Medium',
+    lineHeight: 21,
+  },
+  profileInlineError: {
+    color: '#D32F2F',
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 13,
+    lineHeight: 16,
+  },
+  profileAddressButtonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  profileAddressSaveButton: {
+    flex: 1,
   },
 });
