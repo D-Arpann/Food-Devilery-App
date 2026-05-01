@@ -8,13 +8,28 @@ import {
   AUTH_FALLBACK_ERRORS,
   AUTH_OTP_LENGTH,
   AUTH_STEP,
-  hasMinDigits,
+  isValidNepalPhoneNumber,
   onlyDigits,
   toNepalE164Phone,
 } from '@repo/utils';
 
 function createOtpArray() {
   return Array(AUTH_OTP_LENGTH).fill('');
+}
+
+function getPhoneOtpErrorMessage(error, fallback) {
+  const message = String(error?.message || error || '').trim();
+  const lowerMessage = message.toLowerCase();
+
+  if (
+    message.includes('twilio.com/docs/errors/20003') ||
+    lowerMessage.includes('error sending confirmation otp to provider') ||
+    lowerMessage.includes('authenticate')
+  ) {
+    return 'Phone OTP is not configured correctly. Use a configured test OTP locally, or update the SMS provider settings in Supabase.';
+  }
+
+  return message || fallback;
 }
 
 export function usePhoneAuthFlow({
@@ -51,9 +66,15 @@ export function usePhoneAuthFlow({
       return false;
     }
 
+    // When going back from SIGNUP, a session exists from OTP verification.
+    // Sign out to prevent auto-login with fallback/incomplete profile data.
+    if (step === AUTH_STEP.SIGNUP && supabase) {
+      supabase.auth.signOut().catch(() => {});
+    }
+
     setStep((prev) => Math.max(AUTH_STEP.PHONE, prev - 1));
     return true;
-  }, [step]);
+  }, [step, supabase]);
 
   const setOtpDigit = useCallback((index, value) => {
     const digit = onlyDigits(value).slice(-1);
@@ -84,7 +105,7 @@ export function usePhoneAuthFlow({
       return { ok: false };
     }
 
-    if (!hasMinDigits(phone, 6)) {
+    if (!isValidNepalPhoneNumber(phone)) {
       setError(AUTH_FALLBACK_ERRORS.invalidPhone);
       return { ok: false };
     }
@@ -97,7 +118,7 @@ export function usePhoneAuthFlow({
       const { error: otpError } = await sendPhoneOtp(supabase, fullPhone);
 
       if (otpError) {
-        setError(otpError.message || AUTH_FALLBACK_ERRORS.sendOtp);
+        setError(getPhoneOtpErrorMessage(otpError, AUTH_FALLBACK_ERRORS.sendOtp));
         return { ok: false, error: otpError };
       }
 
@@ -136,6 +157,9 @@ export function usePhoneAuthFlow({
         });
 
         if (verifyError) {
+          if (data?.session) {
+            await supabase.auth.signOut();
+          }
           setError(verifyError.message || AUTH_FALLBACK_ERRORS.verifyOtp);
           return { ok: false, error: verifyError };
         }
@@ -192,6 +216,7 @@ export function usePhoneAuthFlow({
       }
 
       onFlowComplete?.({ type: 'signup_complete', session: data?.session || null });
+      setStep(AUTH_STEP.PHONE);
       return { ok: true };
     } catch (_err) {
       setError(AUTH_FALLBACK_ERRORS.signup);
@@ -215,7 +240,7 @@ export function usePhoneAuthFlow({
       const { error: resendError } = await sendPhoneOtp(supabase, fullPhone);
 
       if (resendError) {
-        setError(resendError.message || AUTH_FALLBACK_ERRORS.resend);
+        setError(getPhoneOtpErrorMessage(resendError, AUTH_FALLBACK_ERRORS.resend));
         return { ok: false, error: resendError };
       }
 

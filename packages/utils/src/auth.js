@@ -1,4 +1,4 @@
-export const AUTH_OTP_LENGTH = 4;
+export const AUTH_OTP_LENGTH = 6;
 export const NEPAL_COUNTRY_CODE = '+977';
 
 export function onlyDigits(value = '') {
@@ -7,6 +7,18 @@ export function onlyDigits(value = '') {
 
 export function hasMinDigits(value, minDigits = 6) {
   return onlyDigits(value).length >= minDigits;
+}
+
+export function getNepalNationalPhoneDigits(value = '') {
+  const digits = onlyDigits(value);
+  if (digits.startsWith('977')) {
+    return digits.slice(3);
+  }
+  return digits;
+}
+
+export function isValidNepalPhoneNumber(value = '') {
+  return getNepalNationalPhoneDigits(value).length === 10;
 }
 
 export function toE164Phone(value, countryCode) {
@@ -21,5 +33,6 @@ export function toE164Phone(value, countryCode) {
 }
 
 export function toNepalE164Phone(value) {
-  return toE164Phone(value, NEPAL_COUNTRY_CODE);
+  const nationalDigits = getNepalNationalPhoneDigits(value);
+  return toE164Phone(nationalDigits, NEPAL_COUNTRY_CODE);
 }

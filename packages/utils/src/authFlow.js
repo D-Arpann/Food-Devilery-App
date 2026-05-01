@@ -6,26 +6,26 @@ export const AUTH_STEP = {
 
 export const AUTH_COPY = {
   intro: {
-    title: "Hungry?\nWe're on it",
-    subtitle: "Because the fridge isn't going to\napologize and improve.",
+    title: 'Food delivered\naround Kathmandu',
+    subtitle: 'Browse restaurants, track orders, and manage deliveries from one simple app.',
     cta: 'Get started',
   },
   phone: {
-    title: 'Time to eat',
-    subtitle: 'Your number is the secret ingredient.',
+    title: 'Welcome back',
+    subtitle: 'Enter your phone number to continue.',
     action: 'Continue',
     alternate: 'Other login method',
   },
   otp: {
-    title: 'Check your texts',
-    subtitle: 'Pop in the code from your messages.',
+    title: 'Verify your number',
+    subtitle: 'Enter the code sent to your phone.',
     action: 'Verify',
     resendLead: "Didn't get the code?",
     resendAction: 'Resend',
   },
   signup: {
-    title: 'First rodeo?',
-    subtitle: 'Welcome to the cool table.',
+    title: 'Create your profile',
+    subtitle: 'Add your details for delivery updates.',
     action: 'Sign up',
     fullNameLabel: 'Full name',
     emailLabel: 'Email',
@@ -42,7 +42,7 @@ export const AUTH_COPY = {
 
 export const AUTH_FALLBACK_ERRORS = {
   invalidPhone: 'Please enter a valid phone number.',
-  invalidOtp: 'Please enter the 4-digit code.',
+  invalidOtp: 'Please enter the 6-digit code.',
   sendOtp: 'Failed to send OTP. Please try again.',
   verifyOtp: 'Verification failed. Please try again.',
   verifyOtpUnknown: 'Could not verify the code. Please try again.',

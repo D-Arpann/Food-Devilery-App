@@ -19,10 +19,51 @@ function fallbackName(phone) {
   return suffix ? `User ${suffix}` : 'Customer';
 }
 
+const SEEDED_LOGIN_PHONE_DIGITS = new Set([
+  '9800000000',
+  '9800000001',
+  '9800000002',
+  '9800000003',
+  '9800000100',
+  '9800000200',
+]);
+
+function isSeededLoginPhone(phone) {
+  const phoneDigits = onlyDigits(phone).slice(-10);
+  return SEEDED_LOGIN_PHONE_DIGITS.has(phoneDigits);
+}
+
+function getAuthUser(authData) {
+  return authData?.user || authData?.session?.user || null;
+}
+
+function getTrustedAuthProfile(authData, phone) {
+  const user = getAuthUser(authData);
+  const appMetadata = user?.app_metadata || {};
+  const userMetadata = user?.user_metadata || {};
+  const role = appMetadata.role;
+
+  if (!role || !Object.values(USER_ROLES).includes(role)) {
+    return null;
+  }
+
+  return {
+    id: user.id,
+    full_name: userMetadata.full_name || fallbackName(phone || user.phone),
+    email: user.email || userMetadata.email || fallbackEmail(phone || user.phone, user.id),
+    phone: user.phone || userMetadata.phone || phone,
+    role,
+    avatar_url: userMetadata.avatar_url || null,
+    verification_status: appMetadata.verification_status || 'verified',
+    is_online: false,
+    vehicle_details: null,
+  };
+}
+
 async function findExistingProfile(client, phone, userId) {
   if (userId) {
     const { data: byId, error: byIdError } = await client
-      .from(TABLES.PROFILES)
+      .from(TABLES.USER_PROFILES)
       .select('*')
       .eq('id', userId)
       .maybeSingle();
@@ -38,7 +79,7 @@ async function findExistingProfile(client, phone, userId) {
 
   if (phone) {
     const { data: byPhone, error: byPhoneError } = await client
-      .from(TABLES.PROFILES)
+      .from(TABLES.USER_PROFILES)
       .select('*')
       .eq('phone', phone)
       .maybeSingle();
@@ -55,8 +96,75 @@ async function findExistingProfile(client, phone, userId) {
   return { data: null, error: null };
 }
 
+function isMissingRpcError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    error?.code === 'PGRST202' ||
+    error?.code === '42883' ||
+    message.includes('could not find the function') ||
+    message.includes('function public.sync_login_profile') ||
+    message.includes('function sync_login_profile')
+  );
+}
+
+function normalizeRpcProfile(data) {
+  if (Array.isArray(data)) {
+    return data[0] || null;
+  }
+
+  return data || null;
+}
+
+async function syncLoginProfile(client) {
+  if (typeof client.rpc !== 'function') {
+    return { data: null, error: null };
+  }
+
+  const { data, error } = await client.rpc('sync_login_profile');
+
+  if (error && isMissingRpcError(error)) {
+    return { data: null, error: null };
+  }
+
+  return { data: normalizeRpcProfile(data), error };
+}
+
+async function refreshSessionAfterProfileSync(client, authData) {
+  if (typeof client.auth.refreshSession !== 'function') {
+    return authData;
+  }
+
+  const { data, error } = await client.auth.refreshSession();
+
+  if (error || !data?.session) {
+    return authData;
+  }
+
+  return {
+    ...authData,
+    ...data,
+    user: data.user || authData.user,
+    session: data.session,
+  };
+}
+
 export async function sendPhoneOtp(client, phone) {
   const { data, error } = await client.auth.signInWithOtp({ phone });
+  return { data, error };
+}
+
+export async function sendEmailOtp(client, email) {
+  const { data, error } = await client.auth.signInWithOtp({
+    email,
+    options: {
+      shouldCreateUser: true,
+    },
+  });
+  return { data, error };
+}
+
+export async function sendPhoneChangeOtp(client, phone) {
+  const { data, error } = await client.auth.updateUser({ phone });
   return { data, error };
 }
 
@@ -65,6 +173,24 @@ export async function verifyPhoneOtp(client, phone, token) {
     phone,
     token,
     type: 'sms',
+  });
+  return { data, error };
+}
+
+export async function verifyEmailOtp(client, email, token) {
+  const { data, error } = await client.auth.verifyOtp({
+    email,
+    token,
+    type: 'email',
+  });
+  return { data, error };
+}
+
+export async function verifyPhoneChangeOtp(client, phone, token) {
+  const { data, error } = await client.auth.verifyOtp({
+    phone,
+    token,
+    type: 'phone_change',
   });
   return { data, error };
 }
@@ -103,7 +229,21 @@ export async function upsertCurrentUserProfile(client, profileInput = {}) {
     user.user_metadata?.email ||
     fallbackEmail(phone, user.id);
 
-  const role = profileInput.role || user.user_metadata?.role || USER_ROLES.CUSTOMER;
+  const { data: existingProfile, error: lookupError } = await findExistingProfile(
+    client,
+    phone,
+    user.id,
+  );
+
+  if (lookupError) {
+    return { data: null, error: lookupError };
+  }
+
+  const role =
+    profileInput.role ||
+    existingProfile?.role ||
+    user.user_metadata?.role ||
+    USER_ROLES.CUSTOMER;
 
   const profilePayload = {
     id: user.id,
@@ -113,8 +253,43 @@ export async function upsertCurrentUserProfile(client, profileInput = {}) {
     role,
   };
 
+  const avatarUrl =
+    profileInput.avatar_url ||
+    profileInput.avatarUrl ||
+    existingProfile?.avatar_url;
+
+  if (avatarUrl) {
+    profilePayload.avatar_url = avatarUrl;
+  }
+
+  const verificationStatus =
+    profileInput.verification_status ||
+    existingProfile?.verification_status;
+
+  if (verificationStatus) {
+    profilePayload.verification_status = verificationStatus;
+  }
+
+  const hasOnlineInput = typeof profileInput.is_online !== 'undefined';
+  const hasExistingOnline = typeof existingProfile?.is_online !== 'undefined';
+
+  if (hasOnlineInput || hasExistingOnline) {
+    profilePayload.is_online = hasOnlineInput
+      ? profileInput.is_online
+      : existingProfile.is_online;
+  }
+
+  const vehicleDetails =
+    profileInput.vehicle_details ||
+    profileInput.vehicleDetails ||
+    existingProfile?.vehicle_details;
+
+  if (vehicleDetails) {
+    profilePayload.vehicle_details = vehicleDetails;
+  }
+
   const { data, error } = await client
-    .from(TABLES.PROFILES)
+    .from(TABLES.USER_PROFILES)
     .upsert(profilePayload, { onConflict: 'id' })
     .select()
     .single();
@@ -138,6 +313,15 @@ export async function verifyOtpAndSyncProfile(client, payload) {
     return { data: authData, error: null };
   }
 
+  const trustedAuthProfile = getTrustedAuthProfile(authData, phone);
+
+  if (trustedAuthProfile) {
+    return {
+      data: { ...authData, profile: trustedAuthProfile, needsSignup: false },
+      error: null,
+    };
+  }
+
   const userId = authData?.user?.id || authData?.session?.user?.id;
   const { data: existingProfile, error: lookupError } = await findExistingProfile(
     client,
@@ -149,14 +333,67 @@ export async function verifyOtpAndSyncProfile(client, payload) {
     return { data: { ...authData, profile: null, needsSignup: false }, error: lookupError };
   }
 
+  if (existingProfile && (!profile || Object.keys(profile).length === 0)) {
+    return {
+      data: { ...authData, profile: existingProfile, needsSignup: false },
+      error: null,
+    };
+  }
+
   if (!existingProfile) {
+    const { data: syncedProfile, error: syncError } = await syncLoginProfile(client);
+
+    if (syncError) {
+      return { data: { ...authData, profile: null, needsSignup: false }, error: syncError };
+    }
+
+    if (syncedProfile) {
+      const refreshedAuthData = await refreshSessionAfterProfileSync(client, authData);
+
+      return {
+        data: { ...refreshedAuthData, profile: syncedProfile, needsSignup: false },
+        error: null,
+      };
+    }
+  }
+
+  if (!existingProfile && (!profile || Object.keys(profile).length === 0)) {
+    if (isSeededLoginPhone(phone)) {
+      return {
+        data: { ...authData, profile: null, needsSignup: false },
+        error: {
+          message:
+            'Seeded account exists, but login profile sync did not find it. Run 000_wipe_database.sql, then 001_insert_mock_data.sql, then retry this phone login.',
+        },
+      };
+    }
+
     return {
       data: { ...authData, profile: null, needsSignup: true },
       error: null,
     };
   }
 
-  if (!profile || Object.keys(profile).length === 0) {
+  if (!existingProfile || !profile || Object.keys(profile).length === 0) {
+    if (!existingProfile) {
+      const { data: profileData, error: profileError } = await upsertCurrentUserProfile(client, {
+        phone,
+        ...(profile || {}),
+      });
+
+      if (profileError) {
+        return {
+          data: { ...authData, profile: null, needsSignup: false },
+          error: profileError,
+        };
+      }
+
+      return {
+        data: { ...authData, profile: profileData, needsSignup: false },
+        error: null,
+      };
+    }
+
     return {
       data: { ...authData, profile: existingProfile, needsSignup: false },
       error: null,
@@ -222,12 +459,14 @@ function buildCustomerSettingsRecord({ profile, user }) {
     profile?.full_name ||
     metadata.full_name ||
     fallbackName(phone);
+  const username = String(metadata.username || '').trim();
   const email =
     profile?.email ||
     user?.email ||
     metadata.email ||
     fallbackEmail(phone, profile?.id || user?.id);
   const role = profile?.role || metadata.role || USER_ROLES.CUSTOMER;
+  const avatarUrl = profile?.avatar_url || metadata.avatar_url || '';
   const addresses = normalizeSavedAddresses(metadata.saved_addresses, metadata.address || 'Naxal, Kathmandu');
   const defaultAddressId = resolveDefaultSavedAddressId(addresses, metadata.default_address_id);
   const defaultAddress = getDefaultSavedAddress(addresses, defaultAddressId, metadata.address || 'Naxal, Kathmandu');
@@ -235,9 +474,11 @@ function buildCustomerSettingsRecord({ profile, user }) {
   return {
     id: profile?.id || user?.id || null,
     fullName,
+    username,
     email,
     phone,
     role,
+    avatarUrl,
     addresses,
     defaultAddressId,
     defaultAddress,
@@ -259,7 +500,7 @@ export async function fetchCustomerSettings(client, userId) {
     }
 
     const { data: profile, error: profileError } = await client
-      .from(TABLES.PROFILES)
+      .from(TABLES.USER_PROFILES)
       .select('id, full_name, email, phone, role, avatar_url')
       .eq('id', targetUserId)
       .maybeSingle();
@@ -283,6 +524,8 @@ export async function updateCustomerSettings(client, payload = {}) {
     full_name,
     fullName,
     phone,
+    avatarUrl = '',
+    username = '',
     password = '',
     addresses = [],
     defaultAddressId = '',
@@ -306,6 +549,8 @@ export async function updateCustomerSettings(client, payload = {}) {
       user.user_metadata?.full_name ||
       fallbackName(resolvedPhone),
     ).trim();
+    const resolvedAvatarUrl = String(avatarUrl || user.user_metadata?.avatar_url || '').trim();
+    const resolvedUsername = String(username ?? user.user_metadata?.username ?? '').trim();
 
     const normalizedAddresses = normalizeSavedAddresses(
       addresses,
@@ -325,7 +570,9 @@ export async function updateCustomerSettings(client, payload = {}) {
       data: {
         ...user.user_metadata,
         full_name: resolvedFullName,
+        username: resolvedUsername,
         phone: resolvedPhone,
+        avatar_url: resolvedAvatarUrl,
         saved_addresses: normalizedAddresses,
         default_address_id: resolvedDefaultAddressId,
         address: resolvedDefaultAddress,
@@ -344,6 +591,7 @@ export async function updateCustomerSettings(client, payload = {}) {
     const { data: profileData, error: profileError } = await upsertCurrentUserProfile(client, {
       full_name: resolvedFullName,
       phone: resolvedPhone,
+      avatar_url: resolvedAvatarUrl,
     });
 
     if (profileError) {
