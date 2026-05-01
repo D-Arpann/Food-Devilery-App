@@ -18,25 +18,25 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 14px;
   color: var(--dark-muted);
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 600;
 }
 
 .pulse {
-  width: 42px;
-  height: 42px;
-  border: 4px solid #f0ddd0;
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border, #ececec);
   border-top-color: var(--orange-main);
-  border-radius: 999px;
-  animation: spin 0.9s linear infinite;
+  border-radius: var(--radius-pill, 999px);
+  animation: spin 0.85s linear infinite;
 }
 
 .account-shell {
   min-height: 100vh;
-  padding: 32px clamp(18px, 5vw, 60px) 48px;
-  background: #fffcf9;
+  padding: 28px clamp(20px, 5vw, 48px) 40px;
+  background: var(--surface-warm, #fffcf9);
 }
 
 .account-top {
@@ -44,7 +44,7 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 14px;
-  margin-bottom: 22px;
+  margin-bottom: 20px;
 }
 
 .hello-block {
@@ -54,57 +54,57 @@ body {
 }
 
 .avatar-bubble {
-  width: 52px;
-  height: 52px;
-  border-radius: 999px;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-pill, 999px);
   background: linear-gradient(165deg, #f8b37b, #f8964f);
   color: #fff;
   display: grid;
   place-items: center;
-  font-size: 1.2rem;
+  font-size: 1.15rem;
   font-weight: 800;
-  box-shadow: 0 10px 18px rgba(248, 150, 79, 0.34);
+  box-shadow: 0 8px 16px rgba(248, 150, 79, 0.28);
 }
 
 .hello-title {
   margin: 0;
   color: var(--orange-main);
-  font-size: 1.45rem;
+  font-size: 1.35rem;
   font-weight: 700;
 }
 
 .hello-subtitle {
   margin: 2px 0 0;
   color: var(--dark-muted);
-  font-size: 0.96rem;
+  font-size: 0.92rem;
   font-weight: 500;
 }
 
 .account-placeholder {
-  background: #ffffff;
-  border: 1px solid #f1e5d9;
-  border-radius: 20px;
-  padding: 24px;
-  box-shadow: 0 14px 28px rgba(59, 31, 8, 0.09);
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--border, #ececec);
+  border-radius: var(--radius-lg, 16px);
+  padding: 22px;
+  box-shadow: var(--shadow-card, 0 2px 8px rgba(30, 30, 30, 0.06));
 }
 
 .account-placeholder h2 {
   margin: 0;
   color: var(--orange-main);
-  font-size: 1.7rem;
+  font-size: 1.55rem;
   font-weight: 800;
 }
 
 .account-note {
-  margin: 8px 0 20px;
+  margin: 6px 0 18px;
   color: var(--dark-muted);
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 500;
 }
 
 .account-grid {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .account-row {
@@ -112,21 +112,21 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  border: 1px solid #efe0d2;
-  border-radius: 14px;
-  background: #fdf8f3;
-  padding: 12px 14px;
+  border: 1px solid var(--border, #ececec);
+  border-radius: var(--radius-md, 10px);
+  background: var(--surface-muted, #fafafa);
+  padding: 10px 12px;
 }
 
 .account-label {
-  color: #6d6661;
-  font-size: 0.9rem;
+  color: var(--dark-muted);
+  font-size: 0.85rem;
   font-weight: 700;
 }
 
 .account-value {
-  color: #1e1e1e;
-  font-size: 0.96rem;
+  color: var(--dark-primary);
+  font-size: 0.92rem;
   font-weight: 700;
   text-align: right;
   overflow-wrap: anywhere;
@@ -140,7 +140,7 @@ body {
 
 @media (max-width: 640px) {
   .account-shell {
-    padding-top: 22px;
+    padding-top: 20px;
   }
 
   .account-top {
@@ -149,12 +149,12 @@ body {
   }
 
   .account-placeholder {
-    padding: 18px;
+    padding: 16px;
   }
 
   .account-row {
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
   }
 
   .account-value {

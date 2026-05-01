@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { DeviceFrameset } from 'react-device-frameset'
 import 'react-device-frameset/styles/marvel-devices.min.css'
+import { submitContactForm } from '@repo/api'
 import { AppScreenshot, HeroIllustration, Logo } from '@repo/ui'
 import './WebPage.css'
 
 const features = [
   {
-    title: 'Lightning Fast',
-    desc: 'Get your food delivered in under 30 minutes. Always hot, always fresh.',
+    title: 'Live order tracking',
+    desc: 'Customers see each kitchen and rider status change without refreshing the page.',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="10" />
@@ -16,8 +17,8 @@ const features = [
     ),
   },
   {
-    title: 'Local Favorites',
-    desc: 'From hidden gems in Kathmandu to top-rated chains, find it all here.',
+    title: 'Verified local kitchens',
+    desc: 'Restaurants register with location, bio, banner, profile image, and admin approval before appearing.',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z" />
@@ -25,8 +26,8 @@ const features = [
     ),
   },
   {
-    title: 'Universal Access',
-    desc: 'Seamlessly switch between our mobile app and full-featured web experience.',
+    title: 'One connected workflow',
+    desc: 'Customer ordering, restaurant queue, admin approvals, and rider jobs use the same Supabase data.',
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
@@ -39,25 +40,27 @@ const features = [
 const steps = [
   {
     num: '01',
-    title: 'Find Your Cravings',
-    desc: 'Browse hundreds of menus from the best local restaurants near you.',
+    title: 'Browse verified restaurants',
+    desc: 'See real restaurant profiles, menus, photos, bios, and delivery-ready locations.',
   },
   {
     num: '02',
-    title: 'Seamless Checkout',
-    desc: 'Apply discounts and check out quickly. Pay online or on delivery.',
+    title: 'Place and pay',
+    desc: 'Checkout with cash or eSewa. Paid orders return to the order screen for tracking.',
   },
   {
     num: '03',
-    title: 'Fast Delivery',
-    desc: 'Track your order live as it heads straight to your door.',
+    title: 'Track through delivery',
+    desc: 'Restaurant status, rider assignment, pickup, arrival, and delivery all sync live.',
   },
 ]
 
-export default function WebPage({ onOpenLogin }) {
+export default function WebPage({ supabase, onOpenLogin, onOpenRestaurantSignup }) {
   const [scrolled, setScrolled] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [sent, setSent] = useState(false)
+  const [contactLoading, setContactLoading] = useState(false)
+  const [contactError, setContactError] = useState('')
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 40)
@@ -118,8 +121,26 @@ export default function WebPage({ onOpenLogin }) {
     document.body.style.overflow = ''
   }
 
-  const handleContactSubmit = (e) => {
+  const handleContactSubmit = async (e) => {
     e.preventDefault()
+    setContactError('')
+
+    const formData = new FormData(e.target)
+    const name = formData.get('name') || ''
+    const email = formData.get('email') || ''
+    const message = formData.get('message') || ''
+
+    if (supabase) {
+      setContactLoading(true)
+      const { error } = await submitContactForm(supabase, { name, email, message })
+      setContactLoading(false)
+
+      if (error) {
+        setContactError(error.message || 'Could not send your message right now.')
+        return
+      }
+    }
+
     setSent(true)
     setTimeout(() => {
       setSent(false)
@@ -149,6 +170,13 @@ export default function WebPage({ onOpenLogin }) {
           </ul>
 
           <div className="nav-right">
+            <button
+              type="button"
+              className="btn btn-outline nav-restaurant-btn"
+              onClick={onOpenRestaurantSignup}
+            >
+              For Restaurants
+            </button>
             <button className="btn btn-get-started nav-btn" onClick={onOpenLogin}>
               Login
             </button>
@@ -175,6 +203,16 @@ export default function WebPage({ onOpenLogin }) {
         <a href="#contact" onClick={closeMenu}>
           Contact
         </a>
+        <button
+          type="button"
+          className="mobile-menu-button"
+          onClick={() => {
+            closeMenu()
+            onOpenRestaurantSignup?.()
+          }}
+        >
+          Register Your Restaurant
+        </button>
       </div>
 
       <section className="hero" id="hero">
@@ -186,14 +224,19 @@ export default function WebPage({ onOpenLogin }) {
             </h1>
 
             <p>
-              From local momos to global flavors. Discover top-rated restaurants near you, right on your
-              favorite device.
+              A connected food delivery system for Kathmandu: customers order, restaurants manage kitchens,
+              riders claim pickups, and admins keep the marketplace healthy.
             </p>
 
             <div className="hero-actions">
-              <button className="btn btn-primary" onClick={onOpenLogin}>
-                Get Started
-              </button>
+              <div className="hero-primary-actions">
+                <button className="btn btn-primary" onClick={onOpenLogin}>
+                  Get Started
+                </button>
+                <button className="btn btn-outline" onClick={onOpenRestaurantSignup}>
+                  Register Your Restaurant
+                </button>
+              </div>
               <div className="store-links">
                 <span>Or download the App:</span>
                 <div className="store-badges">
@@ -302,18 +345,19 @@ export default function WebPage({ onOpenLogin }) {
             <form className="contact-form" onSubmit={handleContactSubmit}>
               <div className="form-group">
                 <label htmlFor="contact-name">Name</label>
-                <input type="text" id="contact-name" placeholder="John Doe" required />
+                <input type="text" id="contact-name" name="name" placeholder="John Doe" required />
               </div>
               <div className="form-group">
                 <label htmlFor="contact-email">Email</label>
-                <input type="email" id="contact-email" placeholder="john@example.com" required />
+                <input type="email" id="contact-email" name="email" placeholder="john@example.com" required />
               </div>
               <div className="form-group">
                 <label htmlFor="contact-message">Message</label>
-                <textarea id="contact-message" rows="4" placeholder="How can we help?" required></textarea>
+                <textarea id="contact-message" name="message" rows="4" placeholder="How can we help?" required></textarea>
               </div>
-              <button type="submit" className={`btn ${sent ? 'btn-sent' : 'btn-primary'}`}>
-                {sent ? 'Sent Successfully' : 'Send Message'}
+              {contactError ? <p className="contact-form-error">{contactError}</p> : null}
+              <button type="submit" className={`btn ${sent ? 'btn-sent' : 'btn-primary'}`} disabled={contactLoading}>
+                {contactLoading ? 'Sending...' : sent ? 'Sent Successfully' : 'Send Message'}
               </button>
             </form>
           </div>
@@ -356,7 +400,9 @@ export default function WebPage({ onOpenLogin }) {
                   <a href="#contact">Contact Us</a>
                 </li>
                 <li>
-                  <a href="#">Partner With Us</a>
+                  <button type="button" className="footer-link-button" onClick={onOpenRestaurantSignup}>
+                    Partner With Us
+                  </button>
                 </li>
                 <li>
                   <a href="#">Ride With Us</a>
