@@ -1,0 +1,902 @@
+.restaurant-signup-shell {
+  min-height: 100vh;
+  color: var(--dark-primary);
+  background:
+    linear-gradient(180deg, rgba(255, 244, 236, 0.68) 0%, rgba(255, 255, 255, 0) 420px),
+    #ffffff;
+}
+
+.restaurant-signup-nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(255, 255, 255, 0.96);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.restaurant-signup-nav-inner {
+  min-height: var(--navbar-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.restaurant-signup-nav-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: transparent;
+  color: var(--dark-primary);
+  font: inherit;
+  font-size: 1.14rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.restaurant-signup-nav-brand img {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+
+.restaurant-signup-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.restaurant-signup-nav-actions .btn {
+  padding: 9px 16px;
+  font-size: 0.88rem;
+}
+
+.restaurant-signup-hero {
+  min-height: calc(100svh - var(--navbar-height));
+  display: flex;
+  align-items: center;
+  padding: 34px 0 46px;
+}
+
+.restaurant-signup-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 460px);
+  align-items: center;
+  gap: clamp(30px, 5vw, 64px);
+}
+
+.restaurant-signup-story {
+  max-width: 540px;
+}
+
+.restaurant-signup-story h1 {
+  margin: 0 0 14px;
+  color: var(--dark-primary);
+  font-size: clamp(2.8rem, 5.5vw, 4.5rem);
+  font-weight: 700;
+  line-height: 0.98;
+  letter-spacing: 0;
+}
+
+.restaurant-signup-lead {
+  max-width: 420px;
+  margin: 0;
+  color: var(--dark-muted);
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.restaurant-signup-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.restaurant-signup-feature-grid article {
+  min-height: 118px;
+  padding: 16px;
+  border: 1px solid #f1e8df;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 12px 34px rgba(30, 30, 30, 0.05);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 6px;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+
+.restaurant-signup-feature-grid article:hover {
+  border-color: #ffd0ad;
+  box-shadow: 0 12px 34px rgba(255, 91, 0, 0.08);
+  transform: translateY(-2px);
+}
+
+.restaurant-signup-feature-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: #fff5ec;
+  color: #ff5b00;
+  margin-bottom: 4px;
+}
+
+.restaurant-signup-feature-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.restaurant-signup-feature-grid strong {
+  color: #151515;
+  font-size: 0.95rem;
+}
+
+.restaurant-signup-feature-grid span {
+  color: var(--dark-muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.restaurant-signup-card {
+  width: 100%;
+  padding: 28px 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+  min-width: 0;
+}
+
+.restaurant-signup-card-head {
+  margin-bottom: 20px;
+}
+
+.restaurant-signup-card-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 8px;
+  color: var(--orange-main);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.restaurant-signup-card-kicker svg {
+  flex-shrink: 0;
+}
+
+.restaurant-signup-card-head h2 {
+  margin: 0 0 8px;
+  color: var(--dark-primary);
+  font-size: clamp(1.65rem, 4.5vw, 2rem);
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.1;
+}
+
+.restaurant-signup-card-head p {
+  margin: 0;
+  color: var(--dark-muted);
+  font-size: 0.95rem;
+  line-height: 1.65;
+}
+
+.restaurant-signup-form {
+  display: grid;
+  gap: 14px;
+}
+
+.restaurant-signup-textarea-field {
+  display: grid;
+  gap: 6px;
+}
+
+.restaurant-signup-textarea-field span {
+  color: var(--dark-muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.restaurant-signup-textarea-field textarea {
+  width: 100%;
+  min-height: 98px;
+  padding: 14px 16px;
+  border: 1px solid #eaeaea;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1e1e1e;
+  font: 600 1rem/1.45 'Outfit', sans-serif;
+  resize: vertical;
+  outline: none;
+}
+
+.restaurant-signup-textarea-field textarea:focus {
+  border-color: var(--orange-main);
+  box-shadow: 0 0 0 3px rgba(248, 150, 79, 0.12);
+}
+
+.restaurant-signup-form > div:not([class]) label {
+  color: var(--dark-muted) !important;
+  font-size: 0.88rem !important;
+  font-weight: 700 !important;
+}
+
+.restaurant-signup-form > div:not([class]) > div {
+  min-height: 54px !important;
+  border: 1px solid #eaeaea !important;
+  border-radius: var(--radius-md, 10px) !important;
+  background: var(--surface, #ffffff) !important;
+  box-shadow: none !important;
+}
+
+.restaurant-signup-form > div:not([class]) > div:focus-within {
+  border-color: var(--orange-main) !important;
+  box-shadow: 0 0 0 3px rgba(248, 150, 79, 0.12) !important;
+}
+
+.restaurant-signup-form .google-address-picker {
+  display: grid;
+  gap: 8px;
+  position: relative;
+}
+
+.restaurant-signup-form .google-address-picker label {
+  display: grid;
+  gap: 6px;
+}
+
+.restaurant-signup-form .google-address-picker label span {
+  color: var(--dark-muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.restaurant-signup-form .google-address-input-wrap {
+  position: relative;
+  z-index: 5;
+}
+
+.restaurant-signup-form .google-address-picker input {
+  width: 100%;
+  min-height: 54px;
+  padding: 0 16px;
+  border: 1px solid #eaeaea;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1e1e1e;
+  font: 600 1rem 'Outfit', sans-serif;
+  outline: none;
+}
+
+.restaurant-signup-form .google-address-picker input:focus {
+  border-color: var(--orange-main);
+  box-shadow: 0 0 0 3px rgba(248, 150, 79, 0.12);
+}
+
+.restaurant-signup-form .google-address-loading {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--dark-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.restaurant-signup-form .google-address-predictions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border: 1px solid var(--border, #ececec);
+  border-radius: 10px;
+  background: var(--surface, #ffffff);
+  box-shadow: 0 12px 32px rgba(30, 30, 30, 0.13);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.restaurant-signup-form .google-address-predictions li {
+  margin: 0;
+}
+
+.restaurant-signup-form .google-address-prediction-row {
+  display: flex;
+  align-items: stretch;
+  border-radius: 6px;
+  overflow: hidden;
+  transition: background var(--transition-fast, 0.15s ease);
+}
+
+.restaurant-signup-form .google-address-prediction-row:hover {
+  background: var(--surface-muted, #fafafa);
+}
+
+.restaurant-signup-form .google-address-prediction-main {
+  flex: 1;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font: inherit;
+  min-width: 0;
+}
+
+.restaurant-signup-form .google-address-prediction-main strong {
+  color: var(--dark-primary, #1e1e1e);
+  font-size: 0.92rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+.restaurant-signup-form .google-address-prediction-main span {
+  color: var(--dark-muted, #6f6a66);
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+  min-height: unset !important;
+  padding: 0 !important;
+}
+
+.restaurant-signup-form .google-address-view-map-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: auto 8px auto 0;
+  padding: 0;
+  border: 1px solid var(--border, #ececec);
+  border-radius: 50%;
+  background: #ffffff;
+  cursor: pointer;
+  color: var(--orange-main, #f8964f);
+  transition: background var(--transition-fast, 0.15s ease), color var(--transition-fast, 0.15s ease);
+  flex-shrink: 0;
+}
+
+.restaurant-signup-form .google-address-view-map-btn svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+.restaurant-signup-form .google-address-view-map-btn:hover {
+  background: #fff5ec;
+  color: #c0622c;
+}
+
+.restaurant-signup-form .google-address-map-preview {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface, #ffffff);
+}
+
+.restaurant-signup-form .google-address-map-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.restaurant-signup-form .google-address-map-preview-head div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.restaurant-signup-form .google-address-map-preview-head strong {
+  color: var(--dark-primary, #1e1e1e);
+  font-size: 0.92rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.restaurant-signup-form .google-address-map-preview-head span {
+  color: var(--dark-muted, #6f6a66);
+  font-size: 0.8rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.restaurant-signup-form .google-address-map-preview-head button {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dark-primary, #1e1e1e);
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.restaurant-signup-form .google-address-map-wrap {
+  position: relative;
+  z-index: 1;
+  min-height: 220px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #fff8f2;
+}
+
+.restaurant-signup-form .google-address-map {
+  width: 100%;
+  min-height: 220px;
+}
+
+.restaurant-signup-form .google-address-map-embed {
+  display: block;
+  width: 100%;
+  height: 220px;
+  min-height: 220px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff8f2;
+  pointer-events: none;
+}
+
+.restaurant-signup-form .google-address-map-message {
+  position: absolute;
+  inset: 0;
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: #fff8f2;
+  color: var(--dark-muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-align: center;
+  pointer-events: none;
+}
+
+.restaurant-signup-form .google-address-status {
+  margin: 0;
+  color: #be3b30;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.restaurant-signup-form .google-address-use-map-btn {
+  min-height: 40px;
+  border: 1px solid #ffd0ad;
+  border-radius: var(--radius-sm);
+  background: var(--orange-main, #f8964f);
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.restaurant-signup-form .google-address-use-map-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.restaurant-signup-notice {
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.restaurant-signup-notice-error {
+  background: #fff2f0;
+  border: 1px solid #f6c6c0;
+  color: #be3b30;
+}
+
+.restaurant-signup-notice-success {
+  background: #eefbf2;
+  border: 1px solid #b9e4c2;
+  color: #256b35;
+}
+
+.restaurant-signup-action-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.36fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
+.restaurant-signup-back-button {
+  min-height: 52px;
+  border: 1px solid #eaeaea;
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--dark-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 800;
+}
+
+.restaurant-signup-back-button:hover {
+  border-color: #ffd0ad;
+  background: #fff8f2;
+}
+
+.restaurant-signup-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.restaurant-signup-upload {
+  display: grid;
+  gap: 8px;
+  min-height: 116px;
+  padding: 14px;
+  border: 1px dashed #f0c5a4;
+  border-radius: 10px;
+  background: #fff8f2;
+  cursor: pointer;
+}
+
+.restaurant-signup-upload span {
+  color: var(--dark-muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.restaurant-signup-upload input {
+  width: 100%;
+  color: var(--dark-primary);
+  cursor: pointer;
+  font: 700 0.82rem/1.35 'Outfit', sans-serif;
+}
+
+.restaurant-signup-upload strong {
+  margin-top: auto;
+  color: var(--dark-primary);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.restaurant-signup-preview-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 14px 34px rgba(30, 30, 30, 0.08);
+}
+
+.restaurant-signup-preview-banner {
+  width: 100%;
+  aspect-ratio: 16 / 7;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #fff0e2 0%, #f7f7f7 100%);
+  color: #8a827b;
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.restaurant-signup-preview-banner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.restaurant-signup-preview-body {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding: 0 16px 16px;
+  margin-top: -28px;
+}
+
+.restaurant-signup-preview-avatar {
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 4px solid #ffffff;
+  border-radius: 18px;
+  background: #1e1e1e;
+  color: #ffffff;
+  font-size: 1.5rem;
+  font-weight: 900;
+  box-shadow: 0 10px 24px rgba(30, 30, 30, 0.16);
+}
+
+.restaurant-signup-preview-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.restaurant-signup-preview-copy {
+  min-width: 0;
+  padding-top: 36px;
+}
+
+.restaurant-signup-preview-card h3 {
+  margin: 0 0 6px;
+  color: var(--dark-primary);
+  font-size: 1.1rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.restaurant-signup-preview-card p {
+  margin: 0 0 10px;
+  color: var(--dark-muted);
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.restaurant-signup-preview-card dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.restaurant-signup-preview-card dl div {
+  display: grid;
+  gap: 1px;
+}
+
+.restaurant-signup-preview-card dt {
+  color: #8a827b;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.restaurant-signup-preview-card dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--dark-primary);
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.restaurant-signup-help {
+  margin: 0;
+  color: #6f6a66;
+  font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.55;
+  text-align: center;
+}
+
+.restaurant-signup-otp-inputs {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.restaurant-signup-otp-inputs.is-email {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.restaurant-signup-otp-inputs.is-phone {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.restaurant-signup-otp-inputs input {
+  width: 100%;
+  height: 56px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: var(--surface);
+  color: var(--dark-primary);
+  font-family: 'Outfit', sans-serif;
+  font-size: 1.3rem;
+  font-weight: 700;
+  text-align: center;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.restaurant-signup-otp-inputs input:focus {
+  border-color: var(--orange-main);
+  box-shadow: 0 0 0 3px rgba(248, 150, 79, 0.12);
+}
+
+.restaurant-signup-text-button {
+  justify-self: center;
+  border: none;
+  background: transparent;
+  color: var(--orange-main);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.restaurant-signup-text-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.restaurant-signup-text-button:not(:disabled):hover {
+  color: var(--dark-primary);
+}
+
+.restaurant-signup-pending {
+  display: grid;
+  gap: 16px;
+}
+
+.restaurant-signup-rejected {
+  border-left: 3px solid #be3b30;
+  padding-left: 16px;
+}
+
+.restaurant-signup-pending h2 {
+  margin: 0;
+  color: var(--dark-primary);
+  font-size: clamp(1.65rem, 4.5vw, 2rem);
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.1;
+}
+
+.restaurant-signup-pending p {
+  margin: 0;
+  color: var(--dark-muted);
+  font-size: 0.95rem;
+  line-height: 1.65;
+}
+
+@media (max-width: 900px) {
+  .restaurant-signup-hero {
+    align-items: flex-start;
+  }
+
+  .restaurant-signup-layout {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .restaurant-signup-story {
+    max-width: 680px;
+  }
+
+  .restaurant-signup-story h1 {
+    max-width: 12ch;
+  }
+
+  .restaurant-signup-card {
+    max-width: 560px;
+  }
+}
+
+@media (max-width: 560px) {
+  .restaurant-signup-nav-inner {
+    min-height: auto;
+    padding-top: 14px;
+    padding-bottom: 14px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .restaurant-signup-nav-brand span {
+    font-size: 1.05rem;
+  }
+
+  .restaurant-signup-nav-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .restaurant-signup-nav-actions .btn {
+    flex: 1 1 160px;
+    justify-content: center;
+  }
+
+  .restaurant-signup-hero {
+    align-items: flex-start;
+    padding: 24px 0 36px;
+  }
+
+  .restaurant-signup-layout {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .restaurant-signup-story h1 {
+    font-size: 2.1rem;
+    max-width: none;
+  }
+
+  .restaurant-signup-card {
+    padding: 22px 18px;
+  }
+
+  .restaurant-signup-action-row,
+  .restaurant-signup-preview-card {
+    grid-template-columns: 1fr;
+  }
+
+  .restaurant-signup-upload-grid,
+  .restaurant-signup-preview-body {
+    grid-template-columns: 1fr;
+  }
+
+  .restaurant-signup-preview-body {
+    margin-top: -24px;
+  }
+
+  .restaurant-signup-preview-copy {
+    padding-top: 0;
+  }
+
+  .restaurant-signup-feature-grid {
+    grid-template-columns: 1fr;
+    margin-top: 18px;
+  }
+
+  .restaurant-signup-feature-grid article {
+    min-height: auto;
+  }
+
+  .restaurant-signup-otp-inputs.is-email,
+  .restaurant-signup-otp-inputs.is-phone {
+    gap: 8px;
+  }
+
+  .restaurant-signup-otp-inputs input {
+    height: 52px;
+    font-size: 1.2rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .restaurant-signup-otp-inputs input {
+    height: 46px;
+    font-size: 1rem;
+  }
+}
