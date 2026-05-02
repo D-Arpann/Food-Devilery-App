@@ -1,16 +1,19 @@
 export const TABLES = {
-  PROFILES: 'profiles',
-  FOOD_PLACES: 'food_places',
-  MENU_ITEMS: 'menu_items',
-  ORDERS: 'orders',
-  ORDER_ITEMS: 'order_items',
-  NOTIFICATIONS: 'notifications'
+  USER_PROFILES: 'user_profiles',
+  RESTAURANTS: 'restaurants',
+  RESTAURANT_MENU_ITEMS: 'restaurant_menu_items',
+  CUSTOMER_ORDERS: 'customer_orders',
+  ORDER_LINE_ITEMS: 'order_line_items',
+  USER_NOTIFICATIONS: 'user_notifications',
+  RIDER_LOCATIONS: 'rider_locations',
+  CONTACT_SUBMISSIONS: 'contact_submissions'
 };
 
 export const USER_ROLES = {
   CUSTOMER: 'customer',
-  FOOD_PLACE: 'food_place',
-  RIDER: 'rider'
+  RESTAURANT_OWNER: 'restaurant_owner',
+  RIDER: 'rider',
+  ADMIN: 'admin'
 };
 
 export const ORDER_STATUS = {

@@ -1,5 +1,17 @@
 import { normalizeDeliveryAddress } from './cart.js';
 
+function normalizeAddressCoordinates(entry = {}) {
+  const source = entry?.coordinates || entry?.coords || entry?.location || {};
+  const latitude = Number(source.latitude ?? source.lat ?? entry?.latitude ?? entry?.lat);
+  const longitude = Number(source.longitude ?? source.lng ?? source.lon ?? entry?.longitude ?? entry?.lng ?? entry?.lon);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return null;
+  }
+
+  return { latitude, longitude };
+}
+
 export function normalizeSavedAddresses(rawAddresses = [], fallbackAddress = '') {
   const normalized = (rawAddresses || [])
     .map((entry, index) => {
@@ -11,11 +23,20 @@ export function normalizeSavedAddresses(rawAddresses = [], fallbackAddress = '')
       const fallbackId = `address-${index + 1}`;
       const nextId = String(entry?.id || fallbackId).trim() || fallbackId;
       const nextLabel = String(entry?.label || `Address ${index + 1}`).trim() || `Address ${index + 1}`;
+      const coordinates = normalizeAddressCoordinates(entry);
+      const placeId = String(entry?.placeId || entry?.place_id || '').trim();
+      const formattedAddress = normalizeDeliveryAddress(
+        entry?.formattedAddress || entry?.formatted_address || address,
+        address,
+      );
 
       return {
         id: nextId,
         label: nextLabel,
         address,
+        formattedAddress,
+        coordinates,
+        placeId,
       };
     })
     .filter(Boolean);
@@ -34,6 +55,9 @@ export function normalizeSavedAddresses(rawAddresses = [], fallbackAddress = '')
       id: 'address-home',
       label: 'Home',
       address: fallback,
+      formattedAddress: fallback,
+      coordinates: null,
+      placeId: '',
     },
   ];
 }
@@ -53,4 +77,18 @@ export function getDefaultSavedAddress(addresses = [], preferredId = '', fallbac
     addresses.find((entry) => entry.id === resolvedId)?.address ||
     normalizeDeliveryAddress(fallbackAddress, '')
   );
+}
+
+export function getShortAddress(value = '', maxParts = 3) {
+  const normalized = normalizeDeliveryAddress(value, '');
+  if (!normalized) {
+    return '';
+  }
+
+  const parts = normalized
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return parts.slice(0, Math.max(1, maxParts)).join(', ') || normalized;
 }

@@ -51,7 +51,7 @@ export function filterRestaurantFeed(restaurants = [], query = '') {
       return true;
     }
 
-    return (restaurant?.menu_items || []).some((item) => {
+    return (restaurant?.menuItems || []).some((item) => {
       const itemHaystack = normalizeText([
         item?.name,
         item?.description,
@@ -82,4 +82,12 @@ export function getDeliveryFee(restaurantId = '') {
 export function formatNpr(amount) {
   const value = Number(amount || 0);
   return `Rs ${Math.round(value)}`;
+}
+
+export function getRestaurantBannerUrl(restaurant = {}) {
+  return restaurant?.banner_url || restaurant?.bannerUrl || restaurant?.image_url || restaurant?.imageUrl || '';
+}
+
+export function getRestaurantProfileImageUrl(restaurant = {}) {
+  return restaurant?.profile_image_url || restaurant?.profileImageUrl || restaurant?.image_url || restaurant?.imageUrl || '';
 }
