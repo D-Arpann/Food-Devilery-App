@@ -5,3 +5,5 @@ export * from './authTheme.js';
 export * from './discovery.js';
 export * from './cart.js';
 export * from './profile.js';
+export * from './orders.js';
+export * from './menu.js';
