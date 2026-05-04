@@ -15,7 +15,7 @@ import {
 import { useFonts } from 'expo-font';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { createAppClient } from '@repo/api';
+import { createAppClient, fetchCustomerSettings } from '@repo/api';
 import { CartProvider, Input, usePhoneAuthFlow } from '@repo/ui';
 import {
   AUTH_COPY,
@@ -24,8 +24,10 @@ import {
   AUTH_STEP,
   NEPAL_COUNTRY_CODE,
   SUPABASE_DEFAULTS,
+  USER_ROLES,
 } from '@repo/utils';
 import { DiscoveryScreen } from './src/DiscoveryScreen';
+import { RiderScreen } from './src/RiderScreen';
 import './global.css';
 
 const supabase = createAppClient({
@@ -43,13 +45,11 @@ const FONT_SEMIBOLD = 'Outfit_600SemiBold';
 const FONT_BOLD = 'Outfit_700Bold';
 const FONT_EXTRABOLD = 'Outfit_800ExtraBold';
 const AUTH_COLORS = AUTH_THEME.colors;
-const AUTH_RADII = AUTH_THEME.radii;
-const AUTH_SIZES = AUTH_THEME.sizes;
 
 function BackButton({ onPress, topInset = 0 }) {
   return (
     <Pressable onPress={onPress} style={[styles.backButton, { top: topInset + s(26) }]}>
-      <Ionicons name="arrow-back" size={s(21)} color="#FFFFFF" />
+      <Ionicons name="arrow-back" size={s(21)} color="#1E1E1E" />
     </Pressable>
   );
 }
@@ -69,9 +69,10 @@ function ActionButton({
     <Pressable
       onPress={onPress}
       disabled={isDisabled}
-      style={[
+      style={({ pressed }) => [
         styles.actionButtonBase,
         variant === 'outline' ? styles.actionButtonOutline : styles.actionButtonFilled,
+        pressed && !isDisabled && styles.actionButtonPressed,
         isDisabled && styles.actionButtonDisabled,
         style,
       ]}
@@ -108,8 +109,11 @@ function MobileAuthApp() {
     : (insets.top || 0);
   const [booting, setBooting] = useState(true);
   const [session, setSession] = useState(null);
+  const [accountProfile, setAccountProfile] = useState(null);
+  const [roleLoading, setRoleLoading] = useState(false);
   const [showIntro, setShowIntro] = useState(true);
   const otpRefs = useRef([]);
+  const lastAutoSubmittedOtpRef = useRef('');
   const [fontsLoaded] = useFonts({
     [FONT_REGULAR]: require('@expo-google-fonts/outfit/400Regular/Outfit_400Regular.ttf'),
     [FONT_MEDIUM]: require('@expo-google-fonts/outfit/500Medium/Outfit_500Medium.ttf'),
@@ -167,6 +171,8 @@ function MobileAuthApp() {
         setShowIntro(false);
       } else {
         setShowIntro(true);
+        setAccountProfile(null);
+        setRoleLoading(false);
         resetFlow();
         otpRefs.current = [];
       }
@@ -183,6 +189,50 @@ function MobileAuthApp() {
     setShowIntro(false);
     otpRefs.current = [];
   };
+
+  useEffect(() => {
+    if (!session?.user?.id) {
+      setAccountProfile(null);
+      setRoleLoading(false);
+      return undefined;
+    }
+
+    if (session?.isTemporaryAuth) {
+      setAccountProfile({
+        id: session.user.id,
+        role: session.user?.app_metadata?.role || session.user?.user_metadata?.role || USER_ROLES.CUSTOMER,
+      });
+      setRoleLoading(false);
+      return undefined;
+    }
+
+    let active = true;
+    setRoleLoading(true);
+
+    fetchCustomerSettings(supabase, session.user.id).then(async ({ data, error: profileError }) => {
+      if (active) {
+        const trustedRole = session.user?.app_metadata?.role || session.user?.user_metadata?.role || '';
+        const hasTrustedRole = Object.values(USER_ROLES).includes(trustedRole);
+
+        if (profileError && step !== AUTH_STEP.SIGNUP && !hasTrustedRole) {
+          await supabase.auth.signOut();
+          return;
+        }
+        setAccountProfile(data ? {
+          id: data.id,
+          role: data.role || (hasTrustedRole ? trustedRole : USER_ROLES.CUSTOMER),
+        } : {
+          id: session.user.id,
+          role: hasTrustedRole ? trustedRole : USER_ROLES.CUSTOMER,
+        });
+        setRoleLoading(false);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [session?.isTemporaryAuth, session?.user?.id, step]);
 
   const handleBack = () => {
     if (step === AUTH_STEP.PHONE) {
@@ -216,6 +266,21 @@ function MobileAuthApp() {
     }
   };
 
+  // Auto-submit OTP when all digits are filled — removes the need to press Verify
+  useEffect(() => {
+    if (step !== AUTH_STEP.OTP) {
+      lastAutoSubmittedOtpRef.current = '';
+      return;
+    }
+
+    const allFilled = otpDigits.length === AUTH_OTP_LENGTH && otpDigits.every((d) => d !== '');
+    const otpCode = otpDigits.join('');
+    if (allFilled && !loading && lastAutoSubmittedOtpRef.current !== otpCode) {
+      lastAutoSubmittedOtpRef.current = otpCode;
+      submitOtp();
+    }
+  }, [otpDigits, step, loading, submitOtp]);
+
   if (booting || !fontsLoaded) {
     return (
       <View style={[styles.loadingScreen, { paddingTop: topInset, paddingBottom: insets.bottom }]}>
@@ -225,7 +290,29 @@ function MobileAuthApp() {
     );
   }
 
-  if (session) {
+  if (session && step !== AUTH_STEP.SIGNUP) {
+    const accountRole = accountProfile?.role || session.user?.app_metadata?.role || session.user?.user_metadata?.role || USER_ROLES.CUSTOMER;
+
+    if (roleLoading) {
+      return (
+        <View style={[styles.loadingScreen, { paddingTop: topInset, paddingBottom: insets.bottom }]}>
+          <StatusBar barStyle="dark-content" />
+          <Image source={BRAND_LOGO} resizeMode="contain" style={styles.loadingLogo} />
+        </View>
+      );
+    }
+
+    if (accountRole === USER_ROLES.RIDER) {
+      return (
+        <RiderScreen
+          session={session}
+          supabase={supabase}
+          topInset={topInset}
+          bottomInset={insets.bottom}
+        />
+      );
+    }
+
     return (
       <CartProvider>
         <DiscoveryScreen
@@ -242,10 +329,17 @@ function MobileAuthApp() {
   if (showIntro) {
     return (
       <View style={styles.introScreen}>
-        <StatusBar barStyle="light-content" />
+        <StatusBar barStyle="dark-content" />
 
-        <View style={[styles.introContent, { paddingTop: topInset + s(102), paddingBottom: insets.bottom + s(22) }]}>
-          <View>
+        <View style={[styles.introContent, { paddingTop: topInset + s(34), paddingBottom: insets.bottom + s(18) }]}>
+          <View style={styles.introBrandCard}>
+            <Image source={BRAND_LOGO} resizeMode="contain" style={styles.introLogo} />
+            <View style={styles.introBrandText}>
+              <Text style={styles.introBrandName}>Chito Mitho</Text>
+            </View>
+          </View>
+
+          <View style={styles.introCopy}>
             <Text style={styles.introTitle}>{AUTH_COPY.intro.title}</Text>
             <Text style={styles.introSubtitle}>{AUTH_COPY.intro.subtitle}</Text>
           </View>
@@ -276,11 +370,18 @@ function MobileAuthApp() {
           style={styles.authScroll}
           contentContainerStyle={[
             styles.authContent,
-            { paddingTop: topInset + s(130), paddingBottom: insets.bottom + s(24) },
+            { paddingTop: topInset + s(78), paddingBottom: insets.bottom + s(20) },
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
+          <View style={styles.authHeaderCard}>
+            <Image source={BRAND_LOGO} resizeMode="contain" style={styles.authLogo} />
+            <View>
+              <Text style={styles.authBrandName}>Chito Mitho</Text>
+            </View>
+          </View>
+
           <ErrorNotice message={error} />
 
           {step === AUTH_STEP.PHONE && (
@@ -293,6 +394,7 @@ function MobileAuthApp() {
                 onChangeText={setPhone}
                 placeholder="1234567890"
                 inputMode="tel"
+                maxLength={10}
                 prefix={NEPAL_COUNTRY_CODE}
                 prefixStyle={styles.phonePrefix}
                 inputStyle={styles.phoneInputText}
@@ -307,14 +409,8 @@ function MobileAuthApp() {
                 textStyle={styles.continueButtonText}
               />
 
-              <Text style={styles.orText}>{AUTH_COPY.common.or}</Text>
+              <Text style={styles.authFinePrint}>We will send a one-time code to this number.</Text>
 
-              <ActionButton
-                title={AUTH_COPY.phone.alternate}
-                variant="outline"
-                style={styles.otherLoginButton}
-                textStyle={styles.otherLoginText}
-              />
             </View>
           )}
 
@@ -422,9 +518,9 @@ export default function App() {
 
 const styles = StyleSheet.create({
   actionButtonBase: {
-    minHeight: s(AUTH_SIZES.buttonHeight),
-    borderRadius: s(AUTH_RADII.field),
-    borderWidth: 2,
+    minHeight: s(48),
+    borderRadius: s(8),
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: s(18),
@@ -444,8 +540,8 @@ const styles = StyleSheet.create({
     opacity: 0.65,
   },
   actionButtonTextBase: {
-    fontSize: s(18),
-    fontFamily: FONT_BOLD,
+    fontSize: s(16),
+    fontFamily: FONT_SEMIBOLD,
     textAlign: 'center',
   },
   actionButtonTextFilled: {
@@ -456,63 +552,121 @@ const styles = StyleSheet.create({
   },
   loadingScreen: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FFFCF9',
     alignItems: 'center',
     justifyContent: 'center',
   },
   loadingLogo: {
-    width: s(178),
-    height: s(178),
+    width: s(112),
+    height: s(112),
   },
 
   introScreen: {
     flex: 1,
-    backgroundColor: AUTH_COLORS.brand,
+    backgroundColor: '#FBFBFB',
   },
   introContent: {
     flex: 1,
-    justifyContent: 'space-between',
-    paddingHorizontal: s(24),
-    paddingTop: s(132),
-    paddingBottom: s(28),
+    justifyContent: 'flex-start',
+    paddingHorizontal: s(16),
+    paddingTop: s(34),
+    paddingBottom: s(18),
+  },
+  introBrandCard: {
+    minHeight: s(42),
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(9),
+  },
+  introLogo: {
+    width: s(34),
+    height: s(34),
+  },
+  introBrandText: {
+    flex: 1,
+  },
+  introBrandName: {
+    color: '#1E1E1E',
+    fontSize: s(15),
+    lineHeight: s(18),
+    fontFamily: FONT_BOLD,
+  },
+  introBrandMeta: {
+    color: '#6E6761',
+    fontSize: s(12),
+    lineHeight: s(16),
+    fontFamily: FONT_MEDIUM,
+    marginTop: s(1),
+  },
+  introCopy: {
+    marginTop: s(108),
+    marginBottom: s(24),
   },
   introTitle: {
-    color: AUTH_COLORS.surface,
-    fontSize: s(60),
-    lineHeight: s(61),
+    color: '#1E1E1E',
+    fontSize: s(36),
+    lineHeight: s(39),
     fontFamily: FONT_EXTRABOLD,
-    letterSpacing: -0.4,
-    marginBottom: s(14),
-    maxWidth: s(320),
+    letterSpacing: 0,
+    marginBottom: s(10),
+    maxWidth: s(310),
   },
   introSubtitle: {
-    color: '#FFE4CE',
-    fontSize: s(17),
-    lineHeight: s(24),
-    fontFamily: FONT_BOLD,
+    color: '#5E5852',
+    fontSize: s(15),
+    lineHeight: s(21),
+    fontFamily: FONT_MEDIUM,
     letterSpacing: 0,
     maxWidth: s(316),
   },
+  introMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: s(8),
+    marginTop: s(16),
+  },
+  introMetaPill: {
+    minHeight: s(30),
+    borderRadius: s(8),
+    borderWidth: 1,
+    borderColor: '#F3D7C2',
+    backgroundColor: '#FFF8F2',
+    paddingHorizontal: s(10),
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(5),
+  },
+  introMetaText: {
+    color: '#6E5748',
+    fontSize: s(12),
+    fontFamily: FONT_SEMIBOLD,
+  },
   introCta: {
-    width: '92%',
+    width: '100%',
     alignSelf: 'center',
-    minHeight: s(AUTH_SIZES.buttonHeight),
-    borderRadius: s(AUTH_RADII.field),
-    backgroundColor: '#EFEFEF',
-    borderWidth: 1.8,
-    borderColor: '#B6B6B6',
+    minHeight: s(54),
+    borderRadius: s(13),
+    backgroundColor: '#F8964F',
+    borderWidth: 0,
     marginBottom: s(10),
+    shadowColor: '#E07830',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 6,
   },
   introCtaText: {
-    color: '#4D4D4D',
-    fontSize: s(17),
-    lineHeight: s(22),
+    color: '#FFFFFF',
+    fontSize: s(16),
+    lineHeight: s(20),
     fontFamily: FONT_BOLD,
   },
 
   authScreen: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FBFBFB',
   },
   authKeyboardWrap: {
     flex: 1,
@@ -521,20 +675,27 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   authContent: {
-    paddingHorizontal: s(39),
-    paddingTop: s(112),
-    paddingBottom: s(28),
+    paddingHorizontal: s(16),
+    paddingTop: s(78),
+    paddingBottom: s(20),
   },
   backButton: {
     position: 'absolute',
-    left: s(36),
-    width: s(AUTH_SIZES.backButton),
-    height: s(AUTH_SIZES.backButton),
-    borderRadius: 999,
-    backgroundColor: AUTH_COLORS.brand,
+    left: s(16),
+    width: s(40),
+    height: s(40),
+    borderRadius: s(12),
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
   },
   errorWrap: {
     backgroundColor: '#FFF0F0',
@@ -542,7 +703,7 @@ const styles = StyleSheet.create({
     borderColor: '#FFCDCD',
     paddingVertical: 10,
     paddingHorizontal: 12,
-    borderRadius: 10,
+    borderRadius: 8,
     marginBottom: 14,
   },
   errorText: {
@@ -552,34 +713,69 @@ const styles = StyleSheet.create({
   },
   stepWrap: {
     gap: 0,
+    borderRadius: s(12),
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
+    padding: s(16),
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.07,
+    shadowRadius: 16,
+    elevation: 4,
+  },
+  authHeaderCard: {
+    minHeight: s(42),
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    marginBottom: s(12),
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(9),
+  },
+  authLogo: {
+    width: s(34),
+    height: s(34),
+  },
+  authBrandName: {
+    color: '#1E1E1E',
+    fontSize: s(15),
+    lineHeight: s(18),
+    fontFamily: FONT_BOLD,
+  },
+  authBrandMeta: {
+    color: '#6E6761',
+    fontSize: s(12),
+    lineHeight: s(16),
+    fontFamily: FONT_MEDIUM,
   },
   stepTitle: {
-    color: AUTH_COLORS.brand,
-    fontSize: s(55),
-    lineHeight: s(58),
+    color: '#1E1E1E',
+    fontSize: s(28),
+    lineHeight: s(32),
     fontFamily: FONT_EXTRABOLD,
-    letterSpacing: -0.3,
+    letterSpacing: 0,
   },
   primaryAuthStepTitle: {
-    fontSize: s(42),
-    lineHeight: s(45),
-    fontFamily: FONT_BOLD,
+    fontSize: s(28),
+    lineHeight: s(32),
+    fontFamily: FONT_EXTRABOLD,
   },
   stepSubtitle: {
-    color: '#5B5B5B',
-    fontSize: s(15),
+    color: '#6E6761',
+    fontSize: s(14),
     lineHeight: s(20),
-    fontFamily: FONT_BOLD,
+    fontFamily: FONT_MEDIUM,
     marginTop: s(6),
     marginBottom: s(18),
   },
 
   phoneInputField: {
-    minHeight: s(AUTH_SIZES.inputHeight),
-    borderRadius: s(AUTH_RADII.field),
-    borderWidth: 3,
-    borderColor: AUTH_COLORS.brand,
-    backgroundColor: '#F6E3D2',
+    minHeight: s(48),
+    borderRadius: s(12),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FAFAFA',
     paddingHorizontal: s(16),
     marginBottom: s(14),
   },
@@ -590,43 +786,120 @@ const styles = StyleSheet.create({
   },
   phoneInputText: {
     color: AUTH_COLORS.ink,
-    fontSize: s(18),
-    fontFamily: FONT_BOLD,
+    fontSize: s(16),
+    fontFamily: FONT_SEMIBOLD,
   },
   continueButton: {
     width: '100%',
-    minHeight: s(AUTH_SIZES.buttonHeight),
-    borderRadius: s(AUTH_RADII.field),
+    minHeight: s(52),
+    borderRadius: s(12),
     backgroundColor: AUTH_COLORS.brand,
     borderColor: AUTH_COLORS.brand,
     borderWidth: 2,
     marginBottom: s(12),
+    shadowColor: AUTH_COLORS.brand,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 5,
   },
   continueButtonText: {
     color: AUTH_COLORS.surface,
-    fontSize: s(18),
-    fontFamily: FONT_BOLD,
+    fontSize: s(16),
+    fontFamily: FONT_SEMIBOLD,
   },
   orText: {
     textAlign: 'center',
     color: '#A1A1A1',
-    fontSize: s(18),
+    fontSize: s(13),
     lineHeight: s(24),
     fontFamily: FONT_BOLD,
     marginBottom: s(10),
   },
+  authFinePrint: {
+    textAlign: 'center',
+    color: '#8C837C',
+    fontSize: s(12),
+    lineHeight: s(17),
+    fontFamily: FONT_MEDIUM,
+    marginTop: s(2),
+  },
+  mobileDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(9),
+    marginVertical: s(14),
+  },
+  mobileDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#ECECEC',
+  },
+  mobileDividerText: {
+    color: '#8C837C',
+    fontSize: s(11),
+    fontFamily: FONT_BOLD,
+    textTransform: 'uppercase',
+  },
+  credentialPanel: {
+    gap: s(9),
+  },
+  credentialInput: {
+    minHeight: s(46),
+    borderRadius: s(10),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FAFAFA',
+    color: '#1E1E1E',
+    fontSize: s(14),
+    fontFamily: FONT_SEMIBOLD,
+    paddingHorizontal: s(14),
+  },
+  passwordButton: {
+    width: '100%',
+    minHeight: s(48),
+    borderRadius: s(10),
+    backgroundColor: '#1E1E1E',
+    borderColor: '#1E1E1E',
+    marginBottom: s(4),
+  },
+  passwordButtonText: {
+    color: '#FFFFFF',
+    fontSize: s(15),
+    fontFamily: FONT_BOLD,
+  },
+  demoAccountRow: {
+    flexDirection: 'row',
+    gap: s(8),
+    marginBottom: s(10),
+  },
+  demoAccountButton: {
+    flex: 1,
+    minHeight: s(36),
+    borderRadius: s(9),
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  demoAccountText: {
+    color: '#4F4A45',
+    fontSize: s(12),
+    fontFamily: FONT_BOLD,
+  },
   otherLoginButton: {
     width: '100%',
-    minHeight: s(AUTH_SIZES.buttonHeight),
-    borderRadius: s(AUTH_RADII.field),
-    borderWidth: 3,
-    borderColor: AUTH_COLORS.ink,
+    minHeight: s(46),
+    borderRadius: s(8),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
     backgroundColor: '#FFFFFF',
   },
   otherLoginText: {
-    color: AUTH_COLORS.ink,
-    fontSize: s(18),
-    fontFamily: FONT_BOLD,
+    color: '#4F4A45',
+    fontSize: s(14),
+    fontFamily: FONT_SEMIBOLD,
   },
 
   otpRow: {
@@ -636,24 +909,34 @@ const styles = StyleSheet.create({
   },
   otpInput: {
     flex: 1,
-    minHeight: s(AUTH_SIZES.otpBox),
-    borderRadius: s(15),
-    borderWidth: 4,
-    borderColor: AUTH_COLORS.brand,
-    backgroundColor: '#F6E3D2',
+    minHeight: s(58),
+    borderRadius: s(14),
+    borderWidth: 1.5,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FAFAFA',
     color: AUTH_COLORS.ink,
-    fontSize: s(22),
+    fontSize: s(24),
     fontFamily: FONT_EXTRABOLD,
     textAlign: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
   },
   filledActionButton: {
     width: '100%',
-    minHeight: s(AUTH_SIZES.buttonHeight),
-    borderRadius: s(AUTH_RADII.field),
+    minHeight: s(52),
+    borderRadius: s(12),
     backgroundColor: AUTH_COLORS.brand,
     borderColor: AUTH_COLORS.brand,
     borderWidth: 2,
     marginBottom: s(12),
+    shadowColor: AUTH_COLORS.brand,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 5,
   },
   filledActionButtonText: {
     color: AUTH_COLORS.surface,
@@ -687,18 +970,18 @@ const styles = StyleSheet.create({
   },
 
   signupInputField: {
-    minHeight: s(AUTH_SIZES.inputHeight),
-    borderRadius: s(AUTH_RADII.field),
-    borderWidth: 3,
-    borderColor: AUTH_COLORS.brand,
-    backgroundColor: '#F6E3D2',
+    minHeight: s(48),
+    borderRadius: s(8),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FAFAFA',
     paddingHorizontal: s(16),
     marginBottom: s(8),
   },
   signupInputText: {
-    fontSize: s(18),
+    fontSize: s(15),
     color: '#1E1E1E',
-    fontFamily: FONT_BOLD,
+    fontFamily: FONT_MEDIUM,
   },
   signupButtonWrap: {
     marginTop: s(6),
@@ -707,9 +990,9 @@ const styles = StyleSheet.create({
   disclaimer: {
     textAlign: 'center',
     color: '#B6B6B6',
-    fontSize: s(15),
-    lineHeight: s(21),
-    fontFamily: FONT_BOLD,
+    fontSize: s(12),
+    lineHeight: s(17),
+    fontFamily: FONT_MEDIUM,
     marginTop: s(2),
     marginBottom: s(8),
     paddingHorizontal: s(18),
@@ -816,5 +1099,231 @@ const styles = StyleSheet.create({
     color: '#1E1E1E',
     fontSize: 14,
     fontFamily: FONT_BOLD,
+  },
+
+  // --- Brand-aligned intro/auth overrides ---
+  introContent: {
+    flex: 1,
+    justifyContent: 'flex-start',
+    paddingHorizontal: s(24),
+    paddingTop: s(36),
+    paddingBottom: s(28),
+    gap: s(24),
+  },
+  introBrandCard: {
+    minHeight: s(62),
+    borderRadius: s(10),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: s(12),
+    paddingVertical: s(10),
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(10),
+  },
+  introCopy: {
+    flex: 1,
+    justifyContent: 'center',
+    marginTop: 0,
+    marginBottom: 0,
+  },
+  introTitle: {
+    color: '#1E1E1E',
+    fontSize: s(36),
+    lineHeight: s(40),
+    fontFamily: FONT_BOLD,
+    letterSpacing: 0,
+    marginBottom: s(12),
+    maxWidth: s(330),
+  },
+  introSubtitle: {
+    color: '#5E5E5E',
+    fontSize: s(15),
+    lineHeight: s(22),
+    fontFamily: FONT_MEDIUM,
+    letterSpacing: 0,
+    maxWidth: s(330),
+  },
+  introCta: {
+    width: '100%',
+    alignSelf: 'center',
+    minHeight: s(54),
+    borderRadius: s(10),
+    backgroundColor: '#F8964F',
+    borderWidth: 0,
+    marginBottom: s(10),
+    shadowColor: '#F8964F',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 18,
+    elevation: 5,
+  },
+  authHeaderCard: {
+    minHeight: s(58),
+    borderRadius: s(10),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: s(12),
+    paddingVertical: s(9),
+    marginBottom: s(14),
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(10),
+  },
+  stepWrap: {
+    gap: 0,
+    borderRadius: s(10),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    padding: s(18),
+  },
+  continueButton: {
+    marginTop: s(18),
+    minHeight: s(54),
+    borderRadius: s(10),
+    backgroundColor: '#F8964F',
+    borderWidth: 0,
+  },
+  filledActionButton: {
+    marginTop: s(18),
+    minHeight: s(54),
+    borderRadius: s(10),
+    backgroundColor: '#F8964F',
+    borderWidth: 0,
+  },
+  loadingScreen: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  introScreen: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  authScreen: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  actionButtonBase: {
+    minHeight: s(48),
+    borderRadius: s(10),
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: s(18),
+  },
+  backButton: {
+    position: 'absolute',
+    left: s(24),
+    width: s(40),
+    height: s(40),
+    borderRadius: s(20),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 20,
+  },
+  introBrandCard: {
+    minHeight: s(60),
+    borderRadius: s(10),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: s(12),
+    paddingVertical: s(10),
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(10),
+  },
+  introMetaPill: {
+    minHeight: s(30),
+    borderRadius: s(999),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: s(10),
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(5),
+  },
+  introCta: {
+    width: '100%',
+    alignSelf: 'center',
+    minHeight: s(54),
+    borderRadius: s(10),
+    backgroundColor: '#F8964F',
+    borderWidth: 0,
+    marginBottom: s(10),
+  },
+  authHeaderCard: {
+    minHeight: s(58),
+    borderRadius: s(10),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: s(12),
+    paddingVertical: s(9),
+    marginBottom: s(14),
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: s(10),
+  },
+  stepWrap: {
+    gap: 0,
+    borderRadius: s(10),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    padding: s(18),
+  },
+  phoneInputField: {
+    minHeight: s(48),
+    borderRadius: s(8),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: s(16),
+    marginBottom: s(14),
+  },
+  signupInputField: {
+    minHeight: s(48),
+    borderRadius: s(8),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: s(16),
+    marginBottom: s(8),
+  },
+  otpInput: {
+    flex: 1,
+    minHeight: s(56),
+    borderRadius: s(10),
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    color: AUTH_COLORS.ink,
+    fontSize: s(22),
+    fontFamily: FONT_EXTRABOLD,
+    textAlign: 'center',
+  },
+  continueButton: {
+    marginTop: s(18),
+    minHeight: s(54),
+    borderRadius: s(10),
+    backgroundColor: '#F8964F',
+    borderWidth: 0,
+  },
+  filledActionButton: {
+    marginTop: s(18),
+    minHeight: s(54),
+    borderRadius: s(10),
+    backgroundColor: '#F8964F',
+    borderWidth: 0,
   },
 });

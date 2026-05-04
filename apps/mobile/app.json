@@ -18,7 +18,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#F8964F"
       },
       "edgeToEdgeEnabled": true,
       "package": "com.anonymous.chitomitho"
@@ -33,7 +33,13 @@
           "resizeMode": "contain"
         }
       ],
-      "expo-font"
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Chito Mitho uses your location to find nearby restaurants, set delivery addresses, and keep checkout accurate."
+        }
+      ]
     ],
     "web": {
       "favicon": "./assets/favicon.png"
