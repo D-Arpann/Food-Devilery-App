@@ -1,0 +1,24 @@
+project_id = "chito-mitho"
+
+[auth]
+enabled = true
+site_url = "http://localhost:5173"
+additional_redirect_urls = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173"
+]
+jwt_expiry = 3600
+enable_signup = true
+
+[auth.sms]
+enable_signup = true
+enable_confirmations = false
+max_frequency = "5s"
+
+[auth.sms.test_otp]
+"9779800000000" = "123456"
+"9779800000001" = "123456"
+"9779800000002" = "123456"
+"9779800000003" = "123456"
+"9779800000100" = "123456"
+"9779800000200" = "123456"
