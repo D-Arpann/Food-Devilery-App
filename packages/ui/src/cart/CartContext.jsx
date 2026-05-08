@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useReducer } from 'react';
-import { summarizeCart, updateCartItems } from '@repo/utils';
+import { getDeliveryFee, summarizeCart, updateCartItems } from '@repo/utils';
 
 const CartContext = createContext(null);
 
@@ -42,20 +42,22 @@ function reduceCart(state, action) {
         return state;
       }
 
-      if (quantity > 0 && state.restaurant?.id && state.restaurant.id !== restaurant.id) {
-        return {
-          ...state,
-          notice: `Your cart already has items from ${state.restaurant.name}. Clear it before adding from ${restaurant.name}.`,
-        };
-      }
-
-      const nextItems = updateCartItems(state.items, item, quantity);
+      const cartItem = {
+        ...item,
+        restaurantId: restaurant.id,
+        restaurant_id: restaurant.id,
+        restaurantName: restaurant.name,
+        restaurantAddress: restaurant.address || restaurant.formatted_address || '',
+        restaurantImageUrl: restaurant.image_url || restaurant.banner_url || restaurant.profile_image_url || '',
+      };
+      const nextItems = updateCartItems(state.items, cartItem, quantity);
+      const firstRestaurantItem = nextItems[0] || null;
       const nextRestaurant = nextItems.length
         ? {
-          id: restaurant.id,
-          name: restaurant.name,
-          image_url: restaurant.image_url || '',
-          address: restaurant.address || '',
+          id: firstRestaurantItem.restaurantId || restaurant.id,
+          name: firstRestaurantItem.restaurantName || restaurant.name,
+          image_url: firstRestaurantItem.restaurantImageUrl || restaurant.image_url || '',
+          address: firstRestaurantItem.restaurantAddress || restaurant.address || '',
         }
         : null;
 
@@ -116,6 +118,38 @@ export function CartProvider({ children }) {
     [state.items],
   );
 
+  const groups = useMemo(() => {
+    const byRestaurant = new Map();
+
+    state.items.forEach((item) => {
+      const restaurantId = item.restaurantId || item.restaurant_id || state.restaurant?.id || 'unknown';
+      if (!byRestaurant.has(restaurantId)) {
+        byRestaurant.set(restaurantId, {
+          restaurant: {
+            id: restaurantId,
+            name: item.restaurantName || state.restaurant?.name || 'Restaurant',
+            address: item.restaurantAddress || state.restaurant?.address || '',
+            image_url: item.restaurantImageUrl || state.restaurant?.image_url || '',
+          },
+          items: [],
+          deliveryFee: restaurantId === 'unknown' ? 0 : getDeliveryFee(restaurantId),
+        });
+      }
+
+      byRestaurant.get(restaurantId).items.push(item);
+    });
+
+    return Array.from(byRestaurant.values()).map((group) => ({
+      ...group,
+      summary: summarizeCart(group.items, group.deliveryFee),
+    }));
+  }, [state.items, state.restaurant]);
+
+  const totalDeliveryFee = useMemo(
+    () => groups.reduce((sum, group) => sum + group.deliveryFee, 0),
+    [groups],
+  );
+
   const getSummary = useCallback(
     (deliveryFee = 0) => summarizeCart(state.items, deliveryFee),
     [state.items],
@@ -124,9 +158,11 @@ export function CartProvider({ children }) {
   const value = useMemo(() => ({
     restaurant: state.restaurant,
     items: state.items,
+    groups,
     notice: state.notice,
     itemCount: baseSummary.itemCount,
     subtotal: baseSummary.subtotal,
+    deliveryFee: totalDeliveryFee,
     setItemQuantity,
     incrementItem,
     decrementItem,
@@ -138,6 +174,8 @@ export function CartProvider({ children }) {
   }), [
     state,
     baseSummary,
+    groups,
+    totalDeliveryFee,
     setItemQuantity,
     incrementItem,
     decrementItem,
