@@ -1143,6 +1143,62 @@
   box-shadow: 0 0 0 3px rgba(248, 150, 79, 0.08);
 }
 
+.discover-rider-card {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border, #ececec);
+}
+
+.discover-rider-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.discover-rider-fields > div:not([class]) label {
+  color: var(--dark-muted) !important;
+  font-size: 0.88rem !important;
+  font-weight: 700 !important;
+}
+
+.discover-rider-fields > div:not([class]) > div {
+  min-height: 46px !important;
+  border: 1px solid var(--border, #ececec) !important;
+  border-radius: var(--radius-sm, 6px) !important;
+  background: var(--surface, #ffffff) !important;
+  box-shadow: none !important;
+}
+
+.discover-rider-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.discover-rider-upload {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed #ffd6b8;
+  border-radius: var(--radius-sm, 6px);
+  background: #fff7ef;
+  color: var(--dark-muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.discover-rider-upload input {
+  width: 100%;
+  font: inherit;
+}
+
+.discover-rider-upload strong {
+  color: var(--dark-primary);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
 .google-address-picker {
   display: grid;
   gap: 8px;
