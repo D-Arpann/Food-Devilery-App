@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Image,
+  Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,41 +11,85 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import * as Location from 'expo-location';
+import * as ImagePicker from 'expo-image-picker';
+import { WebView } from 'react-native-webview';
+import { Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import {
+  buildEsewaPaymentRequest,
   createCheckoutOrder,
+  createEsewaTransactionUuid,
+  decodeEsewaResponseData,
   fetchCustomerOrders,
   fetchCustomerSettings,
   fetchRestaurantFeed,
   logout,
+  mapEsewaStatusToPaymentStatus,
+  subscribeToCustomerOrders,
+  subscribeToRestaurantFeed,
   updateCustomerSettings,
+  updateOrderPaymentStatus,
+  uploadAvatar,
+  verifyEsewaResponseSignature,
 } from '@repo/api';
-import { Button, Input, useCart } from '@repo/ui';
+import { Logo, useCart } from '@repo/ui';
 import {
   filterMenuItems,
   filterRestaurantFeed,
   formatNpr,
   getDeliveryFee,
   getDefaultSavedAddress,
+  getRestaurantBannerUrl,
+  getRestaurantProfileImageUrl,
   getRestaurantRating,
-  hasMinDigits,
+  getShortAddress,
+  getCurrentOrders,
+  getPastOrders,
+  isValidNepalPhoneNumber,
   isValidDeliveryAddress,
+  mergeOrderRecords,
+  normalizeOrderRecord,
   normalizeDeliveryAddress,
   normalizeSavedAddresses,
+  ORDER_STATUS,
   resolveDefaultSavedAddressId,
 } from '@repo/utils';
+import { MapAddressPicker } from './MapAddressPicker';
+import { reverseGeocodeCoordinate } from './mapUtils';
+import { RouteMapCard } from './RouteMapCard';
 
 const TAB_HOME = 'home';
+const TAB_FAVORITES = 'favorites';
 const TAB_ORDERS = 'orders';
 const TAB_CART = 'cart';
 const TAB_PROFILE = 'profile';
+const ORDER_VIEW_CURRENT = 'current';
+const ORDER_VIEW_PAST = 'past';
+const PAYMENT_METHOD_CASH = 'cash';
+const PAYMENT_METHOD_ESEWA = 'esewa';
+const ESEWA_SUCCESS_HOST = 'chito-mitho.local';
+const ESEWA_SUCCESS_PATH = '/payments/esewa/success';
+const ESEWA_FAILURE_PATH = '/payments/esewa/failure';
 
 const tabs = [
   { key: TAB_HOME, label: 'Home' },
+  { key: TAB_FAVORITES, label: 'Favorites' },
   { key: TAB_ORDERS, label: 'Orders' },
-  { key: TAB_CART, label: 'Cart' },
-  { key: TAB_PROFILE, label: 'Profile' },
 ];
+
+const COLORS = {
+  orange: '#F8964F',
+  orangeHot: '#F8964F',
+  ink: '#1E1E1E',
+  text: '#333232',
+  muted: '#5E5E5E',
+  line: '#ECECEC',
+  warmLine: '#F0E6DD',
+  soft: '#FFF4EC',
+  bg: '#FFFFFF',
+  surfaceMuted: '#FAFAFA',
+  white: '#FFFFFF',
+};
 
 const FOOD_PATTERN_GLYPHS = [
   { key: 'pizza', name: 'pizza-outline', top: 6, left: 12, rotate: '-12deg' },
@@ -81,10 +127,58 @@ function FoodPatternLayer({ color = 'rgba(214, 96, 24, 0.28)' }) {
   );
 }
 
-function SearchBar({ value, onChangeText, placeholder = 'Search', menu = false }) {
+function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildEsewaAutoPostHtml(paymentUrl, fields = {}) {
+  const inputs = Object.entries(fields)
+    .map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}" />`)
+    .join('');
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body {
+        min-height: 100%;
+        margin: 0;
+        background: #ffffff;
+        color: #1e1e1e;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      p {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <form id="esewa-form" action="${escapeHtml(paymentUrl)}" method="POST">
+      ${inputs}
+    </form>
+    <p>Opening eSewa sandbox...</p>
+    <script>document.getElementById('esewa-form').submit();</script>
+  </body>
+</html>`;
+}
+
+function SearchBar({ value, onChangeText, placeholder = 'Search restaurants, dishes...', menu = false }) {
   return (
     <View style={[styles.searchBar, menu && styles.searchBarMenu]}>
-      <MaterialCommunityIcons name="magnify" size={22} color="#F8964F" />
+      <Ionicons name="search-outline" size={20} color="#5C5962" />
       <TextInput
         value={value}
         onChangeText={onChangeText}
@@ -92,18 +186,24 @@ function SearchBar({ value, onChangeText, placeholder = 'Search', menu = false }
         placeholderTextColor={menu ? '#8E8882' : '#8E8882'}
         style={[styles.searchInput, menu && styles.searchInputMenu]}
       />
+      {value ? (
+        <Pressable style={styles.searchFilterButton} onPress={() => onChangeText('')}>
+          <Ionicons name="close-circle" size={18} color="#8E8882" />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
 
-function SectionHeader({ title }) {
+function SectionHeader({ title, actionLabel, onAction }) {
   return (
     <View style={styles.sectionHeaderRow}>
       <Text style={styles.sectionTitle}>{title}</Text>
-      <View style={styles.sectionActionWrap}>
-        <Text style={styles.sectionAction}>Show all</Text>
-        <Ionicons name="chevron-forward" size={16} color="#F8964F" />
-      </View>
+      {actionLabel && onAction ? (
+        <Pressable onPress={onAction}>
+          <Text style={styles.sectionAction}>{actionLabel}</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -111,17 +211,13 @@ function SectionHeader({ title }) {
 function MenuQuantityControl({ quantity, onIncrease, onDecrease }) {
   return (
     <View style={styles.menuQtyControl}>
-      <View style={styles.menuQtyInner}>
-        <View style={styles.menuQtyPattern} />
-        <FoodPatternLayer color="rgba(214, 96, 24, 0.42)" />
-        <Pressable style={styles.menuQtyAction} onPress={onDecrease}>
-          <Ionicons name="remove" size={15} color="#FFFFFF" />
-        </Pressable>
-        <Text style={styles.menuQtyValue}>{quantity}</Text>
-        <Pressable style={styles.menuQtyAction} onPress={onIncrease}>
-          <Ionicons name="add" size={16} color="#FFFFFF" />
-        </Pressable>
-      </View>
+      <Pressable style={styles.menuQtyAction} onPress={onDecrease}>
+        <Ionicons name="remove" size={16} color="#FFFFFF" />
+      </Pressable>
+      <Text style={styles.menuQtyValue}>{quantity}</Text>
+      <Pressable style={styles.menuQtyAction} onPress={onIncrease}>
+        <Ionicons name="add" size={16} color="#FFFFFF" />
+      </Pressable>
     </View>
   );
 }
@@ -140,32 +236,68 @@ function CartInlineStepper({ quantity, onIncrease, onDecrease }) {
   );
 }
 
+function TopLogoMark() {
+  return (
+    <Image source={Logo} resizeMode="contain" style={styles.topLogoImage} />
+  );
+}
+
+function FoodImage({ uri, style, fallbackIcon = 'food' }) {
+  if (uri) {
+    return <Image source={{ uri }} style={style} />;
+  }
+
+  return (
+    <View style={[style, styles.foodImageFallback]}>
+      <MaterialCommunityIcons name={fallbackIcon} size={28} color={COLORS.orange} />
+    </View>
+  );
+}
+
+const RESTAURANT_IMAGE_FALLBACKS = [
+  'https://images.unsplash.com/photo-1496116218417-1a781b1c416c?auto=format&fit=crop&w=900&q=80',
+  'https://images.unsplash.com/photo-1585937421612-70a008356fbe?auto=format&fit=crop&w=900&q=80',
+  'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=900&q=80',
+];
+
+function getRestaurantImageUrl(restaurant = {}) {
+  const bannerUrl = getRestaurantBannerUrl(restaurant);
+  if (bannerUrl) {
+    return bannerUrl;
+  }
+
+  const seed = String(restaurant.id || restaurant.name || '')
+    .split('')
+    .reduce((sum, char) => sum + char.charCodeAt(0), 0);
+
+  return RESTAURANT_IMAGE_FALLBACKS[seed % RESTAURANT_IMAGE_FALLBACKS.length];
+}
+
 function RestaurantCard({ restaurant, onPress }) {
-  const firstItem = restaurant.menu_items?.[0];
+  const imageUrl = getRestaurantImageUrl(restaurant);
+  const profileImageUrl = getRestaurantProfileImageUrl(restaurant) || imageUrl;
 
   return (
     <Pressable style={styles.restaurantCard} onPress={onPress}>
       <View style={styles.restaurantCardCover}>
-        <View style={styles.restaurantCoverPattern} />
-        <FoodPatternLayer color="rgba(218, 95, 22, 0.38)" />
-        <Text style={styles.restaurantCoverTitle} numberOfLines={2}>
-          {firstItem?.name || restaurant.name}
-        </Text>
+        <Image source={{ uri: imageUrl }} style={styles.restaurantCoverImage} />
+        <Image source={{ uri: profileImageUrl }} style={styles.restaurantProfileThumb} />
       </View>
 
       <View style={styles.restaurantCardBody}>
-        <Text style={styles.restaurantName} numberOfLines={1}>{restaurant.name}</Text>
-        <Text style={styles.restaurantCategory}>
-          {firstItem?.category || 'Popular'} · {restaurant.menu_items?.length || 0} items
+        <Text style={styles.restaurantName} numberOfLines={2}>{restaurant.name}</Text>
+        <Text style={styles.restaurantAddress} numberOfLines={2}>
+          {getShortAddress(restaurant.address || restaurant.formatted_address || restaurant.description || 'Kathmandu Valley')}
         </Text>
 
         <View style={styles.restaurantMetaRow}>
           <View style={styles.metaPair}>
-            <MaterialCommunityIcons name="star" size={14} color="#111" />
+            <MaterialCommunityIcons name="star" size={14} color={COLORS.orange} />
             <Text style={styles.metaText}>{getRestaurantRating(restaurant.id)}</Text>
           </View>
+          <View style={styles.metaDot} />
           <View style={styles.metaPair}>
-            <MaterialCommunityIcons name="motorbike" size={15} color="#111" />
+            <MaterialCommunityIcons name="motorbike" size={15} color="#6E6761" />
             <Text style={styles.metaText}>{formatNpr(getDeliveryFee(restaurant.id))}</Text>
           </View>
         </View>
@@ -174,21 +306,25 @@ function RestaurantCard({ restaurant, onPress }) {
   );
 }
 
+function FastDeliveryCard({ restaurant, onPress, minutes }) {
+  return (
+    <Pressable style={styles.fastDeliveryCard} onPress={onPress}>
+      <FoodImage uri={getRestaurantImageUrl(restaurant)} style={styles.fastDeliveryImage} fallbackIcon="storefront" />
+      <View style={styles.fastDeliveryTime}>
+        <Text style={styles.fastDeliveryTimeText}>{minutes} MIN</Text>
+      </View>
+      <Text style={styles.fastDeliveryName} numberOfLines={1}>{restaurant.name}</Text>
+    </Pressable>
+  );
+}
+
 function NonFeaturedCard({ restaurant, onPress }) {
-  const firstItem = restaurant.menu_items?.[0];
-  const previewPrice = firstItem?.price || 0;
+  const imageUrl = getRestaurantImageUrl(restaurant);
 
   return (
     <Pressable style={styles.nonFeaturedCard} onPress={onPress}>
       <View style={styles.nonFeaturedImageWrap}>
-        {restaurant.image_url ? (
-          <Image source={{ uri: restaurant.image_url }} style={styles.nonFeaturedImage} />
-        ) : (
-          <>
-            <View style={styles.nonFeaturedImagePattern} />
-            <FoodPatternLayer color="rgba(214, 96, 24, 0.34)" />
-          </>
-        )}
+        <Image source={{ uri: imageUrl }} style={styles.nonFeaturedImage} />
       </View>
 
       <View style={styles.nonFeaturedBody}>
@@ -196,23 +332,16 @@ function NonFeaturedCard({ restaurant, onPress }) {
           <Text style={styles.nonFeaturedName} numberOfLines={1}>
             {restaurant.name}
           </Text>
-          <Text style={styles.nonFeaturedPrice}>{formatNpr(previewPrice)}</Text>
         </View>
 
         <Text style={styles.nonFeaturedAddress} numberOfLines={1}>
-          {restaurant.address || 'Kathmandu'}
+          {getShortAddress(restaurant.address || restaurant.formatted_address || 'Kathmandu')}
         </Text>
 
         <View style={styles.nonFeaturedChips}>
           <View style={styles.nonFeaturedChip}>
             <MaterialCommunityIcons name="star" size={13} color="#111" />
             <Text style={styles.nonFeaturedChipText}>{getRestaurantRating(restaurant.id)}</Text>
-          </View>
-          <View style={styles.nonFeaturedChip}>
-            <MaterialCommunityIcons name="silverware-fork-knife" size={13} color="#111" />
-            <Text style={styles.nonFeaturedChipText}>
-              {firstItem?.category || 'Popular'}
-            </Text>
           </View>
         </View>
       </View>
@@ -223,50 +352,90 @@ function NonFeaturedCard({ restaurant, onPress }) {
 function MenuItemRow({ item, active = false, onPress }) {
   return (
     <Pressable style={[styles.menuItemRow, active && styles.menuItemRowActive]} onPress={onPress}>
-      {active ? (
-        <>
-          <View style={styles.menuItemRowPattern} />
-          <FoodPatternLayer color="rgba(214, 96, 24, 0.4)" />
-        </>
-      ) : null}
-      <View style={styles.menuItemRowInner}>
-        {item.image_url ? (
-          <Image source={{ uri: item.image_url }} style={styles.menuItemThumb} />
-        ) : (
-          <View style={styles.menuItemThumbPlaceholder} />
-        )}
-        <Text style={[styles.menuItemName, active && styles.menuItemNameActive]} numberOfLines={1}>
+      <View style={styles.menuItemRowText}>
+        <Text style={[styles.menuItemName, active && styles.menuItemNameActive]} numberOfLines={2}>
           {item.name}
         </Text>
-        <Text style={[styles.menuItemPrice, active && styles.menuItemPriceActive]}>{formatNpr(item.price)}</Text>
+        <Text style={[styles.menuItemPrice, active && styles.menuItemPriceActive]}>
+          {formatNpr(item.price)}
+        </Text>
+      </View>
+      <View style={[styles.menuItemIndicator, active && styles.menuItemIndicatorActive]}>
+        <Ionicons name={active ? 'checkmark' : 'add'} size={14} color={active ? '#FFFFFF' : '#F8964F'} />
       </View>
     </Pressable>
   );
 }
 
-function CartItemCard({ item, restaurantName, onIncrease, onDecrease }) {
+function MenuFoodCard({ item, quantity = 0, disabled = false, onAdd, onIncrease, onDecrease }) {
   return (
-    <View style={styles.cartItemCard}>
-      <View style={styles.cartItemImageWrap}>
-        {item.image_url ? (
-          <Image source={{ uri: item.image_url }} style={styles.cartItemImage} />
+    <View style={styles.menuFoodCard}>
+      <View style={styles.menuFoodText}>
+        <View style={styles.menuFoodTitleRow}>
+          <Text style={styles.menuFoodName} numberOfLines={1}>{item.name}</Text>
+        </View>
+        <Text style={styles.menuFoodDescription} numberOfLines={2}>
+          {item.description || 'Freshly prepared with house spices.'}
+        </Text>
+        <Text style={styles.menuFoodPrice}>{formatNpr(item.price)}</Text>
+      </View>
+
+      <View style={styles.menuFoodActionWrap}>
+        {quantity > 0 ? (
+          <View style={styles.inlineStepperStatic}>
+            <Pressable style={styles.inlineStepperAction} onPress={onDecrease}>
+              <Ionicons name="remove" size={15} color={COLORS.ink} />
+            </Pressable>
+            <Text style={styles.inlineStepperValue}>{quantity}</Text>
+            <Pressable style={styles.inlineStepperAction} onPress={onIncrease}>
+              <Ionicons name="add" size={15} color={COLORS.ink} />
+            </Pressable>
+          </View>
         ) : (
-          <View style={[styles.cartItemImage, styles.cartItemImagePlaceholder]} />
+          <Pressable
+            style={[styles.menuFoodAddButton, disabled && styles.menuFoodAddButtonDisabled]}
+            onPress={onAdd}
+            disabled={disabled}
+            accessibilityLabel={`Add ${item.name}`}
+          >
+            <Ionicons name="add" size={18} color={COLORS.white} />
+          </Pressable>
         )}
       </View>
+    </View>
+  );
+}
+
+function CartItemCard({ item, restaurantName, onIncrease, onDecrease }) {
+  const deletesItem = Number(item.quantity || 0) <= 1;
+
+  return (
+    <View style={styles.cartItemCard}>
       <View style={styles.cartItemTextWrap}>
         <Text style={styles.cartItemName} numberOfLines={1}>{item.name}</Text>
         <View style={styles.cartItemRestaurantChip}>
-          <Ionicons name="storefront" size={12} color="#D67D3B" />
+          <Ionicons name="storefront" size={12} color={COLORS.orange} />
           <Text style={styles.cartItemRestaurant} numberOfLines={1}>{restaurantName}</Text>
         </View>
         <Text style={styles.cartItemPrice}>{formatNpr(item.price)}</Text>
       </View>
-      <CartInlineStepper
-        quantity={item.quantity}
-        onIncrease={onIncrease}
-        onDecrease={onDecrease}
-      />
+      <View style={styles.inlineStepperStatic}>
+        <Pressable
+          style={styles.inlineStepperAction}
+          onPress={onDecrease}
+          accessibilityLabel={deletesItem ? `Remove ${item.name}` : `Decrease ${item.name}`}
+        >
+          <Ionicons
+            name="remove"
+            size={15}
+            color={COLORS.ink}
+          />
+        </Pressable>
+        <Text style={styles.inlineStepperValue}>{item.quantity}</Text>
+        <Pressable style={styles.inlineStepperAction} onPress={onIncrease}>
+          <Ionicons name="add" size={15} color={COLORS.ink} />
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -275,48 +444,48 @@ function BottomNav({ activeTab, onChange, bottomInset, cartCount = 0 }) {
   const getTabIcon = (tabKey, active) => {
     if (tabKey === TAB_HOME) {
       return (
-        <MaterialCommunityIcons
-          name="home-variant"
-          size={24}
-          color={active ? '#F8964F' : '#5E5E5E'}
-        />
-      );
-    }
-
-    if (tabKey === TAB_CART) {
-      return (
-        <MaterialCommunityIcons
-          name="cart"
-          size={23}
-          color={active ? '#F8964F' : '#5E5E5E'}
+        <MaterialIcons
+          name="home"
+          size={21}
+          color={active ? '#F8964F' : '#9E9E9E'}
         />
       );
     }
 
     if (tabKey === TAB_PROFILE) {
       return (
-        <MaterialCommunityIcons
+        <MaterialIcons
           name="account-circle"
-          size={24}
-          color={active ? '#F8964F' : '#5E5E5E'}
+          size={22}
+          color={active ? '#F8964F' : '#9E9E9E'}
+        />
+      );
+    }
+
+    if (tabKey === TAB_FAVORITES) {
+      return (
+        <MaterialIcons
+          name={active ? 'favorite' : 'favorite-border'}
+          size={21}
+          color={active ? COLORS.orange : '#62606A'}
         />
       );
     }
 
     return (
-      <MaterialCommunityIcons
-        name="clipboard-list"
-        size={23}
-        color={active ? '#F8964F' : '#5E5E5E'}
+      <MaterialIcons
+        name="receipt-long"
+        size={21}
+        color={active ? COLORS.orange : '#62606A'}
       />
     );
   };
 
   return (
-    <View style={[styles.bottomNav, { paddingBottom: Math.max(bottomInset, 8) }]}>
+    <View style={[styles.bottomNav, { paddingBottom: Math.max(bottomInset, 10) }]}>
       {tabs.map((tab) => {
         const active = tab.key === activeTab;
-        const isCartTab = tab.key === TAB_CART;
+        const isOrdersTab = tab.key === TAB_ORDERS;
 
         return (
           <Pressable
@@ -326,24 +495,18 @@ function BottomNav({ activeTab, onChange, bottomInset, cartCount = 0 }) {
           >
             <View style={styles.bottomNavIconWrap}>
               {getTabIcon(tab.key, active)}
-              {isCartTab && cartCount > 0 && (
+              {isOrdersTab && cartCount > 0 && (
                 <View style={styles.cartBadge}>
                   <Text style={styles.cartBadgeText}>{cartCount > 9 ? '9+' : cartCount}</Text>
                 </View>
               )}
             </View>
+            <Text style={[styles.bottomNavLabel, active && styles.bottomNavLabelActive]}>
+              {tab.label}
+            </Text>
           </Pressable>
         );
       })}
-    </View>
-  );
-}
-
-function PlaceholderPane({ title, subtitle }) {
-  return (
-    <View style={styles.placeholderPane}>
-      <Text style={styles.placeholderTitle}>{title}</Text>
-      <Text style={styles.placeholderSubtitle}>{subtitle}</Text>
     </View>
   );
 }
@@ -417,69 +580,38 @@ function getOrderStatusLabel(order) {
   }
 }
 
+function hasAssignedRider(order) {
+  return Boolean(
+    order?.rider_id ||
+    order?.riderId ||
+    order?.rider?.id ||
+    order?.assigned_rider_id ||
+    order?.assignedRiderId,
+  );
+}
+
 function getOrderEtaLabel(order) {
+  if (!hasAssignedRider(order)) {
+    return '';
+  }
+
   if (order?.eta_label) {
     return order.eta_label;
   }
 
+  const eta = Number(order?.estimated_arrival_minutes ?? order?.estimatedArrivalMinutes);
+  if (['picked_up', 'arrived'].includes(order?.status) && Number.isFinite(eta) && eta > 0) {
+    return `${eta} min`;
+  }
+
   switch (order?.status) {
-    case 'accepted':
-    case 'cooking':
-      return '25 minutes';
-    case 'ready_for_pickup':
-      return '15 minutes';
-    case 'picked_up':
-    case 'arrived':
-      return '10 minutes';
     case 'delivered':
-      return 'Completed';
+      return 'Done';
     case 'cancelled':
       return 'Cancelled';
-    case 'placed':
     default:
-      return '20 minutes';
+      return '';
   }
-}
-
-function normalizeOrderRecord(order) {
-  if (!order) {
-    return null;
-  }
-
-  return {
-    ...order,
-    order_items: Array.isArray(order.order_items) ? order.order_items : [],
-  };
-}
-
-function mergeOrderRecords(primaryOrders = [], secondaryOrders = []) {
-  const merged = new Map();
-
-  [...primaryOrders, ...secondaryOrders].forEach((order) => {
-    const normalizedOrder = normalizeOrderRecord(order);
-    if (!normalizedOrder?.id) {
-      return;
-    }
-
-    if (!merged.has(normalizedOrder.id)) {
-      merged.set(normalizedOrder.id, normalizedOrder);
-      return;
-    }
-
-    const current = merged.get(normalizedOrder.id);
-    merged.set(normalizedOrder.id, {
-      ...current,
-      ...normalizedOrder,
-      food_place: normalizedOrder.food_place || current.food_place,
-      order_items: normalizedOrder.order_items?.length ? normalizedOrder.order_items : current.order_items,
-    });
-  });
-
-  return Array.from(merged.values()).sort((left, right) => {
-    const leftTime = new Date(left.created_at || 0).getTime();
-    const rightTime = new Date(right.created_at || 0).getTime();
-    return rightTime - leftTime;
-  });
 }
 
 function createOptimisticOrderRecord({
@@ -490,18 +622,27 @@ function createOptimisticOrderRecord({
   deliveryFee,
   totalAmount,
   createdAt,
+  deliveryAddress,
+  deliveryLocation,
+  paymentStatus = 'pending',
+  paymentMethod = PAYMENT_METHOD_CASH,
 }) {
   return {
     id: orderId,
-    food_place_id: restaurant?.id || null,
+    restaurant_id: restaurant?.id || null,
     subtotal,
     delivery_fee: deliveryFee,
     total_amount: totalAmount,
     status: 'placed',
-    status_label: 'Rider found',
-    eta_label: '20 minutes',
+    status_label: 'Order placed',
+    payment_status: paymentStatus,
+    payment_method: paymentMethod,
     created_at: createdAt,
-    food_place: restaurant
+    delivery_address: deliveryAddress || '',
+    delivery_place_id: deliveryLocation?.placeId || '',
+    delivery_lat: deliveryLocation?.coordinates?.latitude ?? null,
+    delivery_lng: deliveryLocation?.coordinates?.longitude ?? null,
+    restaurant: restaurant
       ? {
         id: restaurant.id,
         name: restaurant.name,
@@ -509,7 +650,7 @@ function createOptimisticOrderRecord({
         image_url: restaurant.image_url,
       }
       : null,
-    order_items: (items || []).map((item) => ({
+    lineItems: (items || []).map((item) => ({
       id: `${orderId}-${item.id}`,
       item_name: item.name,
       item_price: item.price,
@@ -518,30 +659,28 @@ function createOptimisticOrderRecord({
   };
 }
 
-function OrderHistoryCard({ order }) {
-  const restaurantName = order?.food_place?.name || 'Restaurant';
-  const itemLines = order?.order_items || [];
+function OrderHistoryCard({ order, large = false }) {
+  const restaurantName = order?.restaurant?.name || 'Restaurant';
+  const itemLines = order?.lineItems || [];
+  const previewItem = itemLines[0];
+  const etaLabel = getOrderEtaLabel(order);
+  const showRoute = hasAssignedRider(order);
 
   return (
-    <View style={styles.orderHistoryCard}>
+    <View style={[styles.orderHistoryCard, large && styles.orderHistoryCardLarge]}>
       <View style={styles.orderHistoryTopRow}>
-        <View style={styles.orderHistoryLead}>
-          <View style={styles.orderHistoryAvatar}>
-            <MaterialCommunityIcons name="chef-hat" size={20} color="#8D867E" />
-          </View>
-          <View style={styles.orderHistoryLeadLine} />
-        </View>
+        <FoodImage uri={order?.restaurant?.image_url} style={styles.orderHistoryImage} fallbackIcon="storefront" />
 
         <View style={styles.orderHistoryMeta}>
           <Text style={styles.orderHistoryRestaurant} numberOfLines={1}>
             {restaurantName}
           </Text>
-          <Text style={styles.orderHistoryMetaText}>
-            Order id: {getOrderDisplayId(order?.id)}
+          <Text style={styles.orderHistoryMetaText} numberOfLines={1}>
+            {previewItem?.item_name || 'Food order'} x {previewItem?.quantity || itemLines.reduce((sum, item) => sum + Number(item.quantity || 0), 0)}
           </Text>
           <View style={styles.orderHistoryDateRow}>
-            <Text style={styles.orderHistoryMetaText}>{formatOrderDate(order?.created_at)}</Text>
-            <Text style={styles.orderHistoryTime}>{formatOrderTime(order?.created_at)}</Text>
+            <Text style={styles.orderHistoryStatusLine}>{getOrderStatusLabel(order)}</Text>
+            {etaLabel ? <Text style={styles.orderHistoryTime}>{etaLabel}</Text> : null}
           </View>
         </View>
       </View>
@@ -556,9 +695,22 @@ function OrderHistoryCard({ order }) {
           <Text style={styles.orderHistoryTotal}>Total: {formatNpr(order?.total_amount || 0)}</Text>
         </View>
 
-        <View style={styles.orderHistorySummaryCard}>
-          <Text style={styles.orderHistoryStatusLine}>ETA: {getOrderEtaLabel(order)}</Text>
-          <Text style={styles.orderHistoryStatusLine}>Status: {getOrderStatusLabel(order)}</Text>
+        {showRoute ? (
+          <RouteMapCard
+            compact
+            title="Route"
+            order={order}
+            pickupLabel={restaurantName}
+            pickupAddress={order?.restaurant?.address || 'Restaurant pickup'}
+            dropoffLabel="Your address"
+            dropoffAddress={order?.delivery_address || 'Saved checkout address'}
+          />
+        ) : null}
+
+        <View style={styles.orderHistoryFooter}>
+          <Text style={styles.orderHistoryMetaText}>
+            #{getOrderDisplayId(order?.id)} . {formatOrderDate(order?.created_at)} . {formatOrderTime(order?.created_at)}
+          </Text>
         </View>
       </View>
     </View>
@@ -584,7 +736,9 @@ function buildSessionCustomerSettings(session) {
   return {
     id: user.id || null,
     fullName,
+    username: metadata.username || '',
     phone,
+    avatarUrl: metadata.avatar_url || '',
     email: metadata.email || user.email || '',
     role: metadata.role || 'customer',
     addresses,
@@ -597,11 +751,52 @@ function createAddressDraft(address) {
   return {
     label: address?.label || '',
     address: address?.address || '',
+    formattedAddress: address?.formattedAddress || address?.formatted_address || address?.address || '',
+    coordinates: address?.coordinates || null,
+    placeId: address?.placeId || '',
   };
 }
 
 function createLocalAddressId() {
   return `address-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+function formatNativeGeocodeAddress(place = {}) {
+  const parts = [
+    place.name,
+    place.street,
+    place.district || place.city || place.subregion,
+    place.region,
+    place.country,
+  ]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean);
+
+  return [...new Set(parts)].join(', ');
+}
+
+async function getCurrentPositionWithFallback() {
+  try {
+    return await Promise.race([
+      Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      }),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Could not get current GPS yet. Try again or open location settings.')), 8000);
+      }),
+    ]);
+  } catch (positionError) {
+    const lastKnown = await Location.getLastKnownPositionAsync({
+      maxAge: 5 * 60 * 1000,
+      requiredAccuracy: 2000,
+    });
+
+    if (lastKnown?.coords) {
+      return lastKnown;
+    }
+
+    throw positionError;
+  }
 }
 
 function ProfileAddressCard({
@@ -612,6 +807,9 @@ function ProfileAddressCard({
   onDelete,
   canDelete,
 }) {
+  const hasCoordinates = Number.isFinite(Number(address?.coordinates?.latitude))
+    && Number.isFinite(Number(address?.coordinates?.longitude));
+
   return (
     <View style={[styles.profileAddressCard, isDefault && styles.profileAddressCardActive]}>
       <View style={styles.profileAddressCardHead}>
@@ -636,7 +834,7 @@ function ProfileAddressCard({
           </Pressable>
           {canDelete ? (
             <Pressable style={styles.profileAddressAction} onPress={onDelete}>
-              <Ionicons name="trash-outline" size={18} color="#D66018" />
+              <Ionicons name="trash-outline" size={18} color={COLORS.orange} />
             </Pressable>
           ) : null}
         </View>
@@ -644,8 +842,9 @@ function ProfileAddressCard({
 
       <View style={styles.profileAddressLine}>
         <Ionicons name="location" size={15} color="#8C6B56" />
-        <Text style={styles.profileAddressText}>{address.address}</Text>
+        <Text style={styles.profileAddressText}>{getShortAddress(address.address)}</Text>
       </View>
+
     </View>
   );
 }
@@ -664,6 +863,7 @@ export function DiscoveryScreen({
   );
   const initialAddress = sessionCustomerSettings.defaultAddress || 'Naxal, Kathmandu';
   const [feed, setFeed] = useState([]);
+  const [feedRefreshKey, setFeedRefreshKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -673,16 +873,26 @@ export function DiscoveryScreen({
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutMessage, setCheckoutMessage] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHOD_CASH);
+  const [esewaPayment, setEsewaPayment] = useState(null);
+  const [esewaProcessing, setEsewaProcessing] = useState(false);
   const [deliveryAddress, setDeliveryAddress] = useState(initialAddress);
+  const [deliveryLocation, setDeliveryLocation] = useState(null);
+  const [deliveryAddressMode, setDeliveryAddressMode] = useState(
+    sessionCustomerSettings.addresses.length ? 'saved' : 'search',
+  );
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState('');
+  const [orderView, setOrderView] = useState(ORDER_VIEW_CURRENT);
   const [remoteOrders, setRemoteOrders] = useState([]);
   const [localOrders, setLocalOrders] = useState([]);
+  const [favoriteRestaurantIds, setFavoriteRestaurantIds] = useState([]);
   const [profileSettings, setProfileSettings] = useState(sessionCustomerSettings);
   const [profileForm, setProfileForm] = useState({
     fullName: sessionCustomerSettings.fullName,
+    username: sessionCustomerSettings.username || '',
     phone: sessionCustomerSettings.phone,
-    password: '',
+    avatarUrl: sessionCustomerSettings.avatarUrl || '',
   });
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
@@ -692,10 +902,16 @@ export function DiscoveryScreen({
   const [editingAddressId, setEditingAddressId] = useState('');
   const [addressSaving, setAddressSaving] = useState(false);
   const [addressError, setAddressError] = useState('');
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [locationError, setLocationError] = useState('');
+  const [locationSetupAddress, setLocationSetupAddress] = useState(null);
+  const [locationSetupSaving, setLocationSetupSaving] = useState(false);
+  const [locationSetupCompleted, setLocationSetupCompleted] = useState(false);
 
   const {
     restaurant: cartRestaurant,
     items: cartItems,
+    groups: cartGroups,
     notice: cartNotice,
     itemCount,
     incrementItem,
@@ -736,6 +952,14 @@ export function DiscoveryScreen({
     return () => {
       mounted = false;
     };
+  }, [feedRefreshKey, supabase]);
+
+  useEffect(() => {
+    return subscribeToRestaurantFeed(
+      supabase,
+      () => setFeedRefreshKey((current) => current + 1),
+      () => {},
+    );
   }, [supabase]);
 
   useEffect(() => {
@@ -754,10 +978,15 @@ export function DiscoveryScreen({
     setProfileSettings(sessionCustomerSettings);
     setProfileForm({
       fullName: sessionCustomerSettings.fullName,
+      username: sessionCustomerSettings.username || '',
       phone: sessionCustomerSettings.phone,
-      password: '',
+      avatarUrl: sessionCustomerSettings.avatarUrl || '',
     });
     setDeliveryAddress(sessionCustomerSettings.defaultAddress || 'Naxal, Kathmandu');
+    setDeliveryLocation(
+      sessionCustomerSettings.addresses.find((entry) => entry.id === sessionCustomerSettings.defaultAddressId) || null,
+    );
+    setDeliveryAddressMode(sessionCustomerSettings.addresses.length ? 'saved' : 'search');
   }, [sessionCustomerSettings]);
 
   useEffect(() => {
@@ -783,10 +1012,13 @@ export function DiscoveryScreen({
         setProfileSettings(data);
         setProfileForm({
           fullName: data.fullName || '',
+          username: data.username || '',
           phone: data.phone || '',
-          password: '',
+          avatarUrl: data.avatarUrl || '',
         });
         setDeliveryAddress(data.defaultAddress || 'Naxal, Kathmandu');
+        setDeliveryLocation(data.addresses.find((entry) => entry.id === data.defaultAddressId) || null);
+        setDeliveryAddressMode(data.addresses?.length ? 'saved' : 'search');
       }
 
       setProfileLoading(false);
@@ -803,21 +1035,25 @@ export function DiscoveryScreen({
     let mounted = true;
 
     const loadOrders = async () => {
-      if (activeTab !== TAB_ORDERS || session?.isTemporaryAuth || !session?.user?.id) {
+      if (session?.isTemporaryAuth || !session?.user?.id) {
+        setRemoteOrders([]);
+        setOrdersLoading(false);
+        setOrdersError('');
         return;
       }
 
       setOrdersLoading(true);
       setOrdersError('');
 
-      const { data, error: customerOrdersError } = await fetchCustomerOrders(supabase, session.user.id, { limit: 10 });
+      const { data, error: customerOrdersError } = await fetchCustomerOrders(supabase, session.user.id, { limit: 30 });
 
       if (!mounted) {
         return;
       }
 
       if (customerOrdersError) {
-        setOrdersError('Could not load your orders right now.');
+        setRemoteOrders([]);
+        setOrdersError(customerOrdersError.message || 'Could not load your orders right now.');
       } else {
         setRemoteOrders((data || []).map(normalizeOrderRecord).filter(Boolean));
       }
@@ -830,19 +1066,65 @@ export function DiscoveryScreen({
     return () => {
       mounted = false;
     };
-  }, [activeTab, session?.isTemporaryAuth, session?.user?.id, supabase]);
+  }, [session?.isTemporaryAuth, session?.user?.id, supabase]);
 
-  const userName = profileSettings.fullName || session?.user?.phone || 'User';
+  useEffect(() => {
+    if (session?.isTemporaryAuth || !session?.user?.id || !supabase) {
+      return undefined;
+    }
+
+    return subscribeToCustomerOrders(supabase, session.user.id, (payload) => {
+      const updated = normalizeOrderRecord(payload.new);
+      if (!updated?.id) {
+        return;
+      }
+
+      setRemoteOrders((current) => mergeOrderRecords(current, [updated]));
+      setLocalOrders((current) => mergeOrderRecords(current, [updated]));
+    });
+  }, [session?.isTemporaryAuth, session?.user?.id, supabase]);
+
+  const userMetadata = session?.user?.user_metadata || {};
+  const hasStoredAddressMetadata = Boolean(
+    userMetadata.default_address_id ||
+    (Array.isArray(userMetadata.saved_addresses) && userMetadata.saved_addresses.length) ||
+    (userMetadata.address && userMetadata.address !== 'Naxal, Kathmandu'),
+  );
+  const userName = profileSettings.username || profileSettings.fullName || session?.user?.phone || 'User';
   const firstName = userName.split(' ')[0] || userName;
-  const homeLocationText = (profileSettings.defaultAddress || deliveryAddress || initialAddress || 'Kathmandu').trim();
+  const homeLocationText = getShortAddress(profileSettings.defaultAddress || deliveryAddress || initialAddress || 'Kathmandu');
   const mergedOrders = useMemo(
     () => mergeOrderRecords(localOrders, remoteOrders),
     [localOrders, remoteOrders],
   );
-  const visibleOrders = useMemo(
-    () => mergedOrders.filter((order) => order?.status !== 'cancelled'),
+  const currentOrders = useMemo(
+    () => getCurrentOrders(mergedOrders),
     [mergedOrders],
   );
+  const currentOrderPreview = currentOrders[0] || null;
+  const pastOrders = useMemo(
+    () => getPastOrders(mergedOrders),
+    [mergedOrders],
+  );
+  const visibleOrders = useMemo(
+    () => (orderView === ORDER_VIEW_PAST ? pastOrders : currentOrders),
+    [currentOrders, orderView, pastOrders],
+  );
+
+  useEffect(() => {
+    if (session?.isTemporaryAuth || !session?.user?.id || !currentOrders.length) {
+      return undefined;
+    }
+
+    const timer = setInterval(async () => {
+      const { data, error: customerOrdersError } = await fetchCustomerOrders(supabase, session.user.id, { limit: 30 });
+      if (!customerOrdersError) {
+        setRemoteOrders((current) => mergeOrderRecords(current, (data || []).map(normalizeOrderRecord).filter(Boolean)));
+      }
+    }, 15000);
+
+    return () => clearInterval(timer);
+  }, [currentOrders.length, session?.isTemporaryAuth, session?.user?.id, supabase]);
 
   const filteredRestaurants = useMemo(
     () => filterRestaurantFeed(feed, searchQuery),
@@ -869,16 +1151,24 @@ export function DiscoveryScreen({
   );
 
   const selectedMenuItems = useMemo(
-    () => filterMenuItems(selectedRestaurant?.menu_items || [], searchQuery),
+    () => filterMenuItems(selectedRestaurant?.menuItems || [], searchQuery),
     [selectedRestaurant, searchQuery],
   );
   const homeFeaturedRestaurants = useMemo(
-    () => filteredRestaurants.slice(0, 2),
+    () => filteredRestaurants.slice(0, 5),
     [filteredRestaurants],
   );
   const nonFeaturedRestaurants = useMemo(
-    () => filteredRestaurants.slice(2),
-    [filteredRestaurants],
+    () => filteredRestaurants.slice(homeFeaturedRestaurants.length),
+    [filteredRestaurants, homeFeaturedRestaurants.length],
+  );
+  const favoriteRestaurantIdSet = useMemo(
+    () => new Set(favoriteRestaurantIds),
+    [favoriteRestaurantIds],
+  );
+  const favoriteRestaurants = useMemo(
+    () => feed.filter((restaurant) => favoriteRestaurantIdSet.has(restaurant.id)),
+    [favoriteRestaurantIdSet, feed],
   );
 
   const featuredMenuItems = useMemo(
@@ -896,7 +1186,25 @@ export function DiscoveryScreen({
   const selectedMenuQuantity = selectedMenuItem
     ? menuSelection.quantity
     : 0;
-  const canAddFromSelectedRestaurant = !cartRestaurant?.id || cartRestaurant.id === selectedRestaurant?.id;
+  const canAddFromSelectedRestaurant = true;
+  const defaultAddressEntry = useMemo(
+    () => profileSettings.addresses.find((entry) => entry.id === profileSettings.defaultAddressId) || null,
+    [profileSettings.addresses, profileSettings.defaultAddressId],
+  );
+  const selectedDeliveryAddressId = useMemo(() => {
+    const selected = profileSettings.addresses.find((entry) => (
+      entry.address === deliveryAddress ||
+      entry.formattedAddress === deliveryAddress ||
+      entry.id === deliveryLocation?.id
+    ));
+    return selected?.id || '';
+  }, [deliveryAddress, deliveryLocation?.id, profileSettings.addresses]);
+  const hasSavedDeliveryAddresses = profileSettings.addresses.length > 0;
+  const hasValidAddress = isValidDeliveryAddress(deliveryAddress);
+  const addressHelperText = hasValidAddress
+    ? 'Delivery address ready.'
+    : 'Choose a saved address or search for a complete delivery address.';
+  const needsFirstLocationSetup = !locationSetupCompleted && !hasStoredAddressMetadata;
 
   useEffect(() => {
     if (menuSelection.itemId && !selectedMenuItem) {
@@ -909,6 +1217,18 @@ export function DiscoveryScreen({
     setSelectedRestaurantId(restaurantId);
     setSearchQuery('');
     setMenuSelection({ itemId: null, quantity: 0 });
+  };
+
+  const handleToggleFavoriteRestaurant = (restaurant) => {
+    if (!restaurant?.id) {
+      return;
+    }
+
+    setFavoriteRestaurantIds((current) => (
+      current.includes(restaurant.id)
+        ? current.filter((id) => id !== restaurant.id)
+        : [...current, restaurant.id]
+    ));
   };
 
   const handleSelectMenuItem = (item) => {
@@ -976,8 +1296,7 @@ export function DiscoveryScreen({
     }
   };
 
-  const commitProfileSettings = async (nextSettings, options = {}) => {
-    const { password = '' } = options;
+  const commitProfileSettings = async (nextSettings) => {
     const resolvedAddresses = normalizeSavedAddresses(
       nextSettings.addresses,
       nextSettings.defaultAddress || deliveryAddress || initialAddress,
@@ -995,7 +1314,9 @@ export function DiscoveryScreen({
     const normalizedSettings = {
       ...nextSettings,
       fullName: String(nextSettings.fullName || '').trim(),
+      username: String(nextSettings.username || '').trim(),
       phone: String(nextSettings.phone || '').trim(),
+      avatarUrl: String(nextSettings.avatarUrl || '').trim(),
       addresses: resolvedAddresses,
       defaultAddressId: resolvedDefaultAddressId,
       defaultAddress: resolvedDefaultAddress,
@@ -1004,13 +1325,15 @@ export function DiscoveryScreen({
     if (session?.isTemporaryAuth) {
       setProfileSettings(normalizedSettings);
       setDeliveryAddress(resolvedDefaultAddress);
+      setDeliveryLocation(normalizedSettings.addresses.find((entry) => entry.id === resolvedDefaultAddressId) || null);
       return { data: normalizedSettings, error: null, temporary: true };
     }
 
     const { data, error: updateError } = await updateCustomerSettings(supabase, {
       fullName: normalizedSettings.fullName,
+      username: normalizedSettings.username,
       phone: normalizedSettings.phone,
-      password,
+      avatarUrl: normalizedSettings.avatarUrl,
       addresses: normalizedSettings.addresses,
       defaultAddressId: normalizedSettings.defaultAddressId,
     });
@@ -1025,15 +1348,18 @@ export function DiscoveryScreen({
     };
 
     setProfileSettings(updatedSettings);
+    const nextDefaultEntry = updatedSettings.addresses.find((entry) => entry.id === updatedSettings.defaultAddressId) || null;
     setDeliveryAddress(updatedSettings.defaultAddress || resolvedDefaultAddress);
+    setDeliveryLocation(nextDefaultEntry);
 
     return { data: updatedSettings, error: null, temporary: false };
   };
 
   const handleSaveProfileDetails = async () => {
     const nextFullName = String(profileForm.fullName || '').trim();
+    const nextUsername = String(profileForm.username || '').trim();
     const nextPhone = String(profileForm.phone || '').trim();
-    const nextPassword = String(profileForm.password || '');
+    const nextAvatarUrl = String(profileForm.avatarUrl || '').trim();
 
     if (!nextFullName) {
       setProfileError('Enter your full name.');
@@ -1041,14 +1367,8 @@ export function DiscoveryScreen({
       return;
     }
 
-    if (!hasMinDigits(nextPhone, 6)) {
-      setProfileError('Enter a valid phone number.');
-      setProfileMessage('');
-      return;
-    }
-
-    if (nextPassword && nextPassword.length < 6) {
-      setProfileError('New password should be at least 6 characters.');
+    if (!isValidNepalPhoneNumber(nextPhone)) {
+      setProfileError('Enter a 10 digit mobile number.');
       setProfileMessage('');
       return;
     }
@@ -1061,9 +1381,10 @@ export function DiscoveryScreen({
       {
         ...profileSettings,
         fullName: nextFullName,
+        username: nextUsername,
         phone: nextPhone,
+        avatarUrl: nextAvatarUrl,
       },
-      { password: nextPassword },
     );
 
     if (saveError) {
@@ -1072,8 +1393,9 @@ export function DiscoveryScreen({
       setProfileForm((current) => ({
         ...current,
         fullName: nextFullName,
+        username: nextUsername,
         phone: nextPhone,
-        password: '',
+        avatarUrl: nextAvatarUrl,
       }));
       setProfileMessage(
         temporary
@@ -1083,6 +1405,58 @@ export function DiscoveryScreen({
     }
 
     setProfileSaving(false);
+  };
+
+  const handlePickProfileImage = async () => {
+    setProfileError('');
+    setProfileMessage('');
+
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        setProfileError('Allow photo access to choose a profile picture.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.85,
+      });
+
+      if (result.canceled) {
+        return;
+      }
+
+      const asset = result.assets?.[0];
+      const nextUri = asset?.uri;
+      if (nextUri) {
+        setProfileSaving(true);
+        const imageFile = {
+          uri: nextUri,
+          name: asset.fileName || `avatar-${session?.user?.id || 'user'}.jpg`,
+          type: asset.mimeType || 'image/jpeg',
+        };
+        const { data, error: uploadError } = await uploadAvatar(supabase, session?.user?.id, imageFile);
+        if (uploadError || !data?.url) {
+          throw uploadError || new Error('Could not upload profile picture.');
+        }
+
+        const nextAvatarUrl = data.url;
+        setProfileForm((current) => ({ ...current, avatarUrl: nextAvatarUrl }));
+        setProfileSettings((current) => ({ ...current, avatarUrl: nextAvatarUrl }));
+        await commitProfileSettings({
+          ...profileSettings,
+          avatarUrl: nextAvatarUrl,
+        });
+        setProfileMessage('Profile picture updated.');
+      }
+    } catch (pickerError) {
+      setProfileError(pickerError.message || 'Could not open photos.');
+    } finally {
+      setProfileSaving(false);
+    }
   };
 
   const handleSaveAddressDraft = async () => {
@@ -1111,6 +1485,9 @@ export function DiscoveryScreen({
             ...entry,
             label: nextLabel,
             address: nextAddress,
+            formattedAddress: addressDraft.formattedAddress || nextAddress,
+            coordinates: addressDraft.coordinates || entry.coordinates || null,
+            placeId: addressDraft.placeId || entry.placeId || '',
           }
           : entry
       ))
@@ -1120,6 +1497,9 @@ export function DiscoveryScreen({
           id: createLocalAddressId(),
           label: nextLabel,
           address: nextAddress,
+          formattedAddress: addressDraft.formattedAddress || nextAddress,
+          coordinates: addressDraft.coordinates || null,
+          placeId: addressDraft.placeId || '',
         },
       ];
 
@@ -1142,6 +1522,11 @@ export function DiscoveryScreen({
             ? 'Address updated.'
             : 'Address added.',
       );
+      const savedAddress = baseAddresses.find((entry) => entry.id === nextDefaultAddressId) || baseAddresses[0] || null;
+      if (savedAddress) {
+        setDeliveryAddress(savedAddress.address);
+        setDeliveryLocation(savedAddress);
+      }
     }
 
     setAddressSaving(false);
@@ -1178,6 +1563,11 @@ export function DiscoveryScreen({
     if (saveError) {
       setAddressError(saveError.message || 'Could not update your default address.');
     } else {
+      const nextDefaultEntry = profileSettings.addresses.find((entry) => entry.id === addressId) || null;
+      if (nextDefaultEntry) {
+        setDeliveryAddress(nextDefaultEntry.address);
+        setDeliveryLocation(nextDefaultEntry);
+      }
       setProfileMessage(
         temporary
           ? 'Temporary login mode: default address changed for this session.'
@@ -1228,80 +1618,564 @@ export function DiscoveryScreen({
     setAddressSaving(false);
   };
 
-  const handleCheckout = async () => {
-    if (!cartItems.length || !cartRestaurant?.id || checkoutLoading) {
+  const handleSelectDeliveryAddress = (address) => {
+    const nextAddress = normalizeDeliveryAddress(address?.address || address?.formattedAddress || '', '');
+    setDeliveryAddress(nextAddress);
+    setDeliveryLocation(address || null);
+
+    if (checkoutMessage) {
+      setCheckoutMessage('');
+    }
+  };
+
+  const handleDeliveryAddressModeChange = (mode) => {
+    setDeliveryAddressMode(mode);
+
+    if (mode === 'saved' && hasSavedDeliveryAddresses && !selectedDeliveryAddressId) {
+      handleSelectDeliveryAddress(defaultAddressEntry || profileSettings.addresses[0]);
+    }
+  };
+
+  const checkLocationAccess = async () => {
+    try {
+      const [servicesEnabled, permission] = await Promise.all([
+        Location.hasServicesEnabledAsync(),
+        Location.getForegroundPermissionsAsync(),
+      ]);
+
+      const granted = permission.status === 'granted';
+      const active = servicesEnabled && granted;
+      const message = !servicesEnabled
+        ? 'Turn on device location to keep delivery and checkout accurate.'
+        : !granted
+          ? 'Allow location access to keep delivery and checkout accurate.'
+          : '';
+
+      return { active, servicesEnabled, granted, message };
+    } catch (accessError) {
+      const message = accessError.message || 'Could not check location access.';
+      return { active: false, servicesEnabled: false, granted: false, message };
+    }
+  };
+
+  const resolveCurrentLocationAddress = async (label = 'Current location') => {
+    let access = await checkLocationAccess();
+    if (!access.servicesEnabled && Platform.OS === 'android' && Location.enableNetworkProviderAsync) {
+      try {
+        await Location.enableNetworkProviderAsync();
+        access = await checkLocationAccess();
+      } catch {
+        throw new Error('Turn on device location to use your current address.');
+      }
+    }
+
+    if (!access.servicesEnabled) {
+      throw new Error('Turn on device location to use your current address.');
+    }
+
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (permission.status !== 'granted') {
+      throw new Error('Location permission is needed to use your current address.');
+    }
+
+    const position = await getCurrentPositionWithFallback();
+    const coordinates = {
+      latitude: position.coords.latitude,
+      longitude: position.coords.longitude,
+    };
+    const fallbackAddress = `${coordinates.latitude.toFixed(5)}, ${coordinates.longitude.toFixed(5)}`;
+
+    let resolvedAddress = null;
+    try {
+      resolvedAddress = await reverseGeocodeCoordinate(coordinates);
+    } catch {
+      resolvedAddress = null;
+    }
+
+    if (!resolvedAddress?.address) {
+      try {
+        const nativePlaces = await Location.reverseGeocodeAsync(coordinates);
+        const nativeAddress = formatNativeGeocodeAddress(nativePlaces?.[0]);
+        resolvedAddress = {
+          address: nativeAddress || fallbackAddress,
+          formattedAddress: nativeAddress || fallbackAddress,
+          placeId: '',
+          coordinates,
+        };
+      } catch {
+        resolvedAddress = {
+          address: fallbackAddress,
+          formattedAddress: fallbackAddress,
+          placeId: '',
+          coordinates,
+        };
+      }
+    }
+
+    const address = normalizeDeliveryAddress(resolvedAddress.address || fallbackAddress, fallbackAddress);
+
+    return {
+      id: 'current-location',
+      label,
+      address,
+      formattedAddress: resolvedAddress.formattedAddress || address,
+      placeId: resolvedAddress.placeId || '',
+      coordinates,
+    };
+  };
+
+  const handleUseCurrentDeliveryLocation = async () => {
+    if (locationLoading) {
       return;
     }
 
-    if (!isValidDeliveryAddress(deliveryAddress)) {
+    setLocationLoading(true);
+    setLocationError('');
+
+    try {
+      const currentLocation = await resolveCurrentLocationAddress('Current location');
+      handleSelectDeliveryAddress(currentLocation);
+      setDeliveryAddressMode('search');
+    } catch (locationFailure) {
+      const message = locationFailure.message || 'Could not access your current location.';
+      setLocationError(message);
+      if (activeTab === TAB_CART) {
+        setCheckoutMessage(message);
+      }
+    } finally {
+      setLocationLoading(false);
+    }
+  };
+
+  const handleUseCurrentDraftLocation = async () => {
+    if (locationLoading) {
+      return;
+    }
+
+    setLocationLoading(true);
+    setLocationError('');
+    setAddressError('');
+
+    try {
+      const currentLocation = await resolveCurrentLocationAddress('Current location');
+      setAddressDraft((current) => ({
+        ...current,
+        label: current.label || 'Current location',
+        address: currentLocation.address,
+        formattedAddress: currentLocation.formattedAddress,
+        coordinates: currentLocation.coordinates,
+        placeId: currentLocation.placeId,
+      }));
+    } catch (locationFailure) {
+      const message = locationFailure.message || 'Could not access your current location.';
+      setLocationError(message);
+      setAddressError(message);
+    } finally {
+      setLocationLoading(false);
+    }
+  };
+
+  const handleLocationSetupUseCurrent = async () => {
+    if (locationLoading) {
+      return;
+    }
+
+    setLocationLoading(true);
+    setLocationError('');
+
+    try {
+      const currentLocation = await resolveCurrentLocationAddress('Current location');
+      setDeliveryAddress(currentLocation.address);
+      setDeliveryLocation(currentLocation);
+      setDeliveryAddressMode('search');
+      await handleConfirmDefaultLocation(currentLocation);
+    } catch (locationFailure) {
+      const message = locationFailure.message || 'Could not access your current location.';
+      setLocationError(message);
+    } finally {
+      setLocationLoading(false);
+    }
+  };
+
+  const handleConfirmDefaultLocation = async (addressOverride = null) => {
+    const resolvedAddress = addressOverride || locationSetupAddress;
+    const nextAddress = normalizeDeliveryAddress(resolvedAddress?.address || resolvedAddress?.formattedAddress || '', '');
+
+    if (!resolvedAddress || !isValidDeliveryAddress(nextAddress)) {
+      setLocationError('Choose a complete location before setting it as default.');
+      return;
+    }
+
+    setLocationSetupSaving(true);
+    setLocationError('');
+
+    const nextDefaultAddress = {
+      id: createLocalAddressId(),
+      label: resolvedAddress.label || 'Current location',
+      address: nextAddress,
+      formattedAddress: resolvedAddress.formattedAddress || nextAddress,
+      coordinates: resolvedAddress.coordinates || null,
+      placeId: resolvedAddress.placeId || '',
+    };
+
+    const baseAddresses = hasStoredAddressMetadata
+      ? [
+        nextDefaultAddress,
+        ...profileSettings.addresses.filter((entry) => entry.id !== nextDefaultAddress.id),
+      ]
+      : [nextDefaultAddress];
+
+    const { error: saveError } = await commitProfileSettings({
+      ...profileSettings,
+      addresses: baseAddresses,
+      defaultAddressId: nextDefaultAddress.id,
+      defaultAddress: nextDefaultAddress.address,
+    });
+
+    if (saveError) {
+      setLocationError(saveError.message || 'Could not save this default location.');
+    } else {
+      setDeliveryAddress(nextDefaultAddress.address);
+      setDeliveryLocation(nextDefaultAddress);
+      setDeliveryAddressMode('saved');
+      setLocationSetupCompleted(true);
+      setLocationSetupAddress(null);
+      setProfileMessage('Default address set.');
+    }
+
+    setLocationSetupSaving(false);
+  };
+
+  const handleManualLocationSetup = () => {
+    setLocationSetupCompleted(true);
+    setLocationError('');
+    setActiveTab(TAB_PROFILE);
+    setEditingAddressId('');
+    setAddressDraft(createAddressDraft());
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncLocationPrompt() {
+      if (!needsFirstLocationSetup || locationLoading) {
+        return;
+      }
+
+      await handleLocationSetupUseCurrent();
+    }
+
+    syncLocationPrompt();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [needsFirstLocationSetup, session?.user?.id]);
+
+  const openEsewaPayment = ({
+    orderId,
+    transactionUuid,
+    summary,
+    deliveryFee,
+    optimisticOrder,
+    temporary = false,
+  }) => {
+    const request = buildEsewaPaymentRequest({
+      subtotal: summary.subtotal,
+      deliveryFee,
+      totalAmount: summary.total,
+      transactionUuid,
+      successUrl: `https://${ESEWA_SUCCESS_HOST}${ESEWA_SUCCESS_PATH}`,
+      failureUrl: `https://${ESEWA_SUCCESS_HOST}${ESEWA_FAILURE_PATH}`,
+    });
+
+    setEsewaProcessing(false);
+    setEsewaPayment({
+      orderId,
+      transactionUuid,
+      temporary,
+      optimisticOrder,
+      request,
+      html: buildEsewaAutoPostHtml(request.paymentUrl, request.fields),
+    });
+  };
+
+  const finalizeSuccessfulOrder = (optimisticOrder, message) => {
+    if (optimisticOrder) {
+      setLocalOrders((current) => mergeOrderRecords([optimisticOrder], current));
+    }
+    setCheckoutMessage(message);
+    clearCart();
+    setOrderView(ORDER_VIEW_CURRENT);
+    setActiveTab(TAB_ORDERS);
+  };
+
+  const handleEsewaFailure = async (message = 'Payment was not completed.') => {
+    const currentPayment = esewaPayment;
+    setEsewaPayment(null);
+    setEsewaProcessing(false);
+
+    if (currentPayment?.orderId && !currentPayment.temporary) {
+      await updateOrderPaymentStatus(supabase, {
+        orderId: currentPayment.orderId,
+        paymentStatus: 'failed',
+        paymentMethod: PAYMENT_METHOD_ESEWA,
+        paymentProvider: 'esewa',
+        paymentReference: currentPayment.transactionUuid,
+        paymentIntentId: currentPayment.transactionUuid,
+      });
+    }
+
+    setCheckoutMessage(message);
+  };
+
+  const handleEsewaSuccess = async (encodedData) => {
+    const currentPayment = esewaPayment;
+    if (!currentPayment || esewaProcessing) {
+      return;
+    }
+
+    setEsewaProcessing(true);
+
+    try {
+      const response = decodeEsewaResponseData(encodedData);
+      if (!response || !verifyEsewaResponseSignature(response)) {
+        throw new Error('Could not verify eSewa payment signature.');
+      }
+
+      const paymentStatus = mapEsewaStatusToPaymentStatus(response.status);
+      if (currentPayment.orderId && !currentPayment.temporary) {
+        const { error: paymentError } = await updateOrderPaymentStatus(supabase, {
+          orderId: currentPayment.orderId,
+          paymentStatus,
+          paymentMethod: PAYMENT_METHOD_ESEWA,
+          paymentProvider: 'esewa',
+          paymentReference: response.transaction_code || response.refId || response.ref_id || currentPayment.transactionUuid,
+          paymentIntentId: response.transaction_uuid || currentPayment.transactionUuid,
+          paymentAmount: response.total_amount,
+          paymentCurrency: 'NPR',
+          paymentMetadata: response,
+        });
+
+        if (paymentError) {
+          throw paymentError;
+        }
+      }
+
+      setEsewaPayment(null);
+      setEsewaProcessing(false);
+
+      if (paymentStatus === 'paid') {
+        finalizeSuccessfulOrder(
+          currentPayment.optimisticOrder
+            ? {
+              ...currentPayment.optimisticOrder,
+              payment_status: 'paid',
+              payment_method: PAYMENT_METHOD_ESEWA,
+            }
+            : null,
+          'Order placed.',
+        );
+        return;
+      }
+
+      setCheckoutMessage('Payment was not completed. Please try again.');
+    } catch (paymentError) {
+      setEsewaPayment(null);
+      setEsewaProcessing(false);
+      setCheckoutMessage('Payment could not be verified.');
+    }
+  };
+
+  const handleEsewaNavigation = (request) => {
+    const nextUrl = request?.url || '';
+    if (!nextUrl || esewaProcessing) {
+      return true;
+    }
+
+    try {
+      const parsedUrl = new URL(nextUrl);
+      const isAppPaymentUrl = parsedUrl.hostname === ESEWA_SUCCESS_HOST;
+
+      if (!isAppPaymentUrl) {
+        return true;
+      }
+
+      if (parsedUrl.pathname === ESEWA_SUCCESS_PATH) {
+        const encodedData = parsedUrl.searchParams.get('data');
+        if (encodedData) {
+          handleEsewaSuccess(encodedData);
+        } else {
+          handleEsewaFailure('Payment could not be verified.');
+        }
+        return false;
+      }
+
+      if (parsedUrl.pathname === ESEWA_FAILURE_PATH) {
+        handleEsewaFailure('Payment was not completed.');
+        return false;
+      }
+    } catch {
+      return true;
+    }
+
+    return true;
+  };
+
+  const handleCheckout = async () => {
+    if (!cartItems.length || !cartGroups.length || checkoutLoading) {
+      return;
+    }
+
+    if (!hasValidAddress) {
       setCheckoutMessage('Please enter a complete delivery address.');
       return;
     }
 
+    const normalizedAddress = normalizeDeliveryAddress(deliveryAddress);
     setCheckoutLoading(true);
     setCheckoutMessage('');
+    const deliveryFee = cartGroups.reduce((sum, group) => sum + group.deliveryFee, 0);
+    const summary = getSummary(deliveryFee);
+    const isMultiRestaurantCart = cartGroups.length > 1;
+    const transactionUuid = createEsewaTransactionUuid(cartGroups[0]?.restaurant?.id || 'cart');
+
+    if (isMultiRestaurantCart && paymentMethod === PAYMENT_METHOD_ESEWA) {
+      setCheckoutMessage('eSewa checkout needs one restaurant per payment. Use cash for multi-restaurant checkout.');
+      setCheckoutLoading(false);
+      return;
+    }
 
     if (session?.isTemporaryAuth) {
-      const summary = getSummary(getDeliveryFee(cartRestaurant.id));
       const createdAt = new Date().toISOString();
       const optimisticOrder = createOptimisticOrderRecord({
         orderId: `temp-${Date.now()}`,
-        restaurant: cartRestaurant,
+        restaurant: isMultiRestaurantCart ? { name: `${cartGroups.length} restaurants` } : cartGroups[0].restaurant,
         items: cartItems,
         subtotal: summary.subtotal,
         deliveryFee: summary.deliveryFee,
         totalAmount: summary.total,
         createdAt,
+        deliveryAddress: normalizedAddress,
+        deliveryLocation: deliveryLocation || defaultAddressEntry,
+        paymentStatus: 'pending',
+        paymentMethod,
       });
+
+      if (paymentMethod === PAYMENT_METHOD_ESEWA) {
+        openEsewaPayment({
+          orderId: optimisticOrder.id,
+          transactionUuid,
+          summary,
+          deliveryFee,
+          optimisticOrder,
+          temporary: true,
+        });
+        setCheckoutMessage('Complete eSewa to place this order.');
+        setCheckoutLoading(false);
+        return;
+      }
+
       setLocalOrders((current) => mergeOrderRecords([optimisticOrder], current));
       setCheckoutMessage(`Temporary login mode: simulated order (${summary.itemCount} items).`);
       clearCart();
+      setOrderView(ORDER_VIEW_CURRENT);
       setActiveTab(TAB_ORDERS);
       setCheckoutLoading(false);
       return;
     }
 
-    const deliveryFee = getDeliveryFee(cartRestaurant.id);
-    const { data, error: checkoutError } = await createCheckoutOrder(supabase, {
-      customerId: session?.user?.id,
-      foodPlaceId: cartRestaurant.id,
-      deliveryAddress,
-      deliveryFee,
-      cartItems,
-    });
+    const checkoutResults = [];
+    let checkoutError = null;
+
+    for (const group of cartGroups) {
+      const { data, error: groupError } = await createCheckoutOrder(supabase, {
+        customerId: session?.user?.id,
+        restaurantId: group.restaurant.id,
+        deliveryAddress: normalizedAddress,
+        deliveryLocation: deliveryLocation || defaultAddressEntry,
+        deliveryFee: group.deliveryFee,
+        paymentMethod,
+        paymentProvider: paymentMethod === PAYMENT_METHOD_ESEWA ? 'esewa' : '',
+        paymentReference: paymentMethod === PAYMENT_METHOD_ESEWA ? transactionUuid : '',
+        paymentIntentId: paymentMethod === PAYMENT_METHOD_ESEWA ? transactionUuid : '',
+        paymentMetadata: paymentMethod === PAYMENT_METHOD_ESEWA
+          ? { gateway: 'esewa', sandbox: true, transactionUuid }
+          : { checkoutGroupSize: cartGroups.length },
+        cartItems: group.items,
+      });
+
+      if (groupError) {
+        checkoutError = groupError;
+        break;
+      }
+
+      checkoutResults.push({ ...data, restaurant: group.restaurant, items: group.items });
+    }
 
     if (checkoutError) {
       setCheckoutMessage(checkoutError.message || 'Could not confirm your order. Please try again.');
     } else {
-      const shortOrderId = data?.orderId ? String(data.orderId).slice(0, 8) : '';
+      const shortOrderId = checkoutResults[0]?.orderId ? String(checkoutResults[0].orderId).slice(0, 8) : '';
       const optimisticOrder = createOptimisticOrderRecord({
-        orderId: data?.orderId || `order-${Date.now()}`,
-        restaurant: cartRestaurant,
+        orderId: checkoutResults.map((result) => result.orderId).filter(Boolean).join(', ') || `order-${Date.now()}`,
+        restaurant: isMultiRestaurantCart ? { name: `${cartGroups.length} restaurants` } : cartGroups[0].restaurant,
         items: cartItems,
-        subtotal: data?.subtotal ?? cartSummary.subtotal,
-        deliveryFee: data?.deliveryFee ?? deliveryFee,
-        totalAmount: data?.totalAmount ?? cartSummary.total,
+        subtotal: checkoutResults.reduce((sum, result) => sum + (result.subtotal || 0), 0) || cartSummary.subtotal,
+        deliveryFee: checkoutResults.reduce((sum, result) => sum + (result.deliveryFee || 0), 0) || deliveryFee,
+        totalAmount: checkoutResults.reduce((sum, result) => sum + (result.totalAmount || 0), 0) || cartSummary.total,
         createdAt: new Date().toISOString(),
+        deliveryAddress: normalizedAddress,
+        deliveryLocation: deliveryLocation || defaultAddressEntry,
+        paymentStatus: 'pending',
+        paymentMethod,
       });
+
+      if (paymentMethod === PAYMENT_METHOD_ESEWA) {
+        openEsewaPayment({
+          orderId: checkoutResults[0]?.orderId,
+          transactionUuid,
+          summary,
+          deliveryFee,
+          optimisticOrder,
+        });
+        setCheckoutMessage('Complete eSewa to place this order.');
+        setCheckoutLoading(false);
+        return;
+      }
+
       setLocalOrders((current) => mergeOrderRecords([optimisticOrder], current));
       setCheckoutMessage(`Order placed successfully${shortOrderId ? ` (#${shortOrderId})` : ''}.`);
       clearCart();
+      setOrderView(ORDER_VIEW_CURRENT);
       setActiveTab(TAB_ORDERS);
     }
 
     setCheckoutLoading(false);
   };
 
+  const cartDeliveryFee = cartGroups.reduce((sum, group) => sum + group.deliveryFee, 0);
+  const cartSummary = getSummary(cartDeliveryFee);
+  const isHomeTab = activeTab === TAB_HOME;
   const showRestaurantMenu = activeTab === TAB_HOME && selectedRestaurantId && selectedRestaurant;
 
   if (showRestaurantMenu) {
     return (
-      <View style={[styles.screen, styles.menuScreen, { paddingTop: topInset + 28, paddingBottom: bottomInset + 8 }]}>
-        <View style={styles.menuLayout}>
-          <View style={[styles.contentFrame, styles.menuMainContent]}>
-            <View style={styles.menuTopRow}>
+      <View style={[styles.screen, styles.menuScreen, { paddingBottom: bottomInset + 8 }]}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={styles.menuScrollContent}
+        >
+          <View style={styles.menuHero}>
+            <FoodImage
+              uri={selectedRestaurant.image_url}
+              style={styles.menuHeroImage}
+              fallbackIcon="storefront"
+            />
+            <View style={[styles.menuHeroActions, { top: topInset + 16 }]}>
               <Pressable
-                style={styles.menuBackButton}
+                style={styles.menuHeroButton}
                 hitSlop={10}
                 onPress={() => {
                   setSelectedRestaurantId(null);
@@ -1309,106 +2183,104 @@ export function DiscoveryScreen({
                   setMenuSelection({ itemId: null, quantity: 0 });
                 }}
               >
-                <Ionicons name="arrow-back" size={22} color="#1E1E1E" />
+                <Ionicons name="arrow-back" size={22} color={COLORS.ink} />
               </Pressable>
-              <View style={styles.menuSearchWrap}>
-                <SearchBar value={searchQuery} onChangeText={setSearchQuery} menu />
+                <View style={styles.menuHeroRightActions}>
+                <Pressable
+                  style={styles.menuHeroButton}
+                  onPress={() => handleToggleFavoriteRestaurant(selectedRestaurant)}
+                  accessibilityLabel={favoriteRestaurantIdSet.has(selectedRestaurant.id) ? 'Remove favorite' : 'Save favorite'}
+                >
+                  <Ionicons
+                    name={favoriteRestaurantIdSet.has(selectedRestaurant.id) ? 'heart' : 'heart-outline'}
+                    size={21}
+                    color={favoriteRestaurantIdSet.has(selectedRestaurant.id) ? COLORS.orange : COLORS.ink}
+                  />
+                </Pressable>
               </View>
             </View>
+          </View>
 
+          <View style={styles.contentFrame}>
             <View style={styles.menuRestaurantCard}>
               <View style={styles.menuRestaurantAvatar}>
-                {selectedRestaurant.image_url ? (
-                  <Image source={{ uri: selectedRestaurant.image_url }} style={styles.menuRestaurantImage} />
-                ) : (
-                  <MaterialCommunityIcons name="chef-hat" size={25} color="#AFA8A1" />
-                )}
+                <FoodImage uri={getRestaurantBannerUrl(selectedRestaurant) || selectedRestaurant.image_url} style={styles.menuRestaurantImage} fallbackIcon="storefront" />
               </View>
               <View style={styles.menuRestaurantInfo}>
-                <Text style={styles.menuRestaurantName} numberOfLines={1}>{selectedRestaurant.name}</Text>
-                <View style={styles.menuRestaurantMetaLine}>
-                  <Ionicons name="location" size={13} color="#8C6B56" />
-                  <Text style={styles.menuRestaurantAddress} numberOfLines={1}>
-                    {selectedRestaurant.address || 'Naxal, Kathmandu'}
-                  </Text>
+                <View style={styles.menuRestaurantTitleLine}>
+                  <Text style={styles.menuRestaurantName} numberOfLines={1}>{selectedRestaurant.name}</Text>
+                  <View style={styles.menuOpenBadge}>
+                    <Text style={styles.menuOpenBadgeText}>Open</Text>
+                  </View>
                 </View>
-                <View style={styles.menuRestaurantRatingWrap}>
-                  <MaterialCommunityIcons name="star" size={17} color="#111111" />
-                  <Text style={styles.menuRestaurantRating}>{getRestaurantRating(selectedRestaurant.id)}</Text>
+                <View style={styles.menuRestaurantMetaRow}>
+                  <MaterialCommunityIcons name="star" size={15} color={COLORS.orange} />
+                  <Text style={styles.menuRestaurantMetaText}>{getRestaurantRating(selectedRestaurant.id)}</Text>
+                  <Text style={styles.menuDotText}>.</Text>
+                  <MaterialCommunityIcons name="motorbike" size={15} color={COLORS.muted} />
+                  <Text style={styles.menuRestaurantMetaText}>{formatNpr(getDeliveryFee(selectedRestaurant.id))}</Text>
                 </View>
+                <Text style={styles.menuRestaurantAddress} numberOfLines={2}>
+                  {selectedRestaurant.description || 'Authentic Nepali food made with fresh ingredients.'}
+                </Text>
               </View>
             </View>
 
-            <Text style={styles.menuFeaturedTitle}>Featured:</Text>
-            <View style={styles.menuPanel}>
-              {!selectedMenuItems.length ? (
-                <Text style={styles.emptyText}>No menu items match your search.</Text>
-              ) : (
-                <View style={styles.menuPanelContent}>
-                  {featuredMenuItems.map((item) => (
-                    <MenuItemRow
+            <SearchBar
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search this menu"
+              menu
+            />
+
+            <Text style={styles.menuSectionTitle}>{searchQuery ? 'Search results' : 'Menu'}</Text>
+            {!selectedMenuItems.length ? (
+              <Text style={styles.emptyText}>No menu items match your search.</Text>
+            ) : (
+              <View style={styles.menuFoodList}>
+                {selectedMenuItems.map((item) => {
+                  const cartQuantity = cartItems.find((cartItem) => cartItem.id === item.id)?.quantity || 0;
+                  const canAddItem = true;
+
+                  return (
+                    <MenuFoodCard
                       key={item.id}
                       item={item}
-                      active={selectedMenuItem?.id === item.id && selectedMenuQuantity > 0}
-                      onPress={() => handleSelectMenuItem(item)}
+                      quantity={cartQuantity}
+                      disabled={!canAddItem}
+                      onAdd={() => incrementItem(selectedRestaurant, item)}
+                      onIncrease={() => incrementItem(selectedRestaurant, item)}
+                      onDecrease={() => decrementItem(selectedRestaurant, item)}
                     />
-                  ))}
-                </View>
-              )}
-            </View>
-
-            <Text style={styles.menuRegularHeading}>Regular:</Text>
-            <View style={styles.menuRegularCard}>
-              {!regularMenuItems.length ? (
-                <Text style={styles.menuRegularHint}>No regular items in this menu.</Text>
-              ) : (
-                regularMenuItems.map((item) => (
-                  <MenuItemRow
-                    key={item.id}
-                    item={item}
-                    active={selectedMenuItem?.id === item.id && selectedMenuQuantity > 0}
-                    onPress={() => handleSelectMenuItem(item)}
-                  />
-                ))
-              )}
-            </View>
-
-            {!!selectedMenuItem && selectedMenuQuantity > 0 && (
-              <View style={styles.menuBottomActions}>
-                <MenuQuantityControl
-                  quantity={selectedMenuQuantity}
-                  onIncrease={handleMenuQuantityIncrease}
-                  onDecrease={handleMenuQuantityDecrease}
-                />
-
-                <Pressable
-                  style={[
-                    styles.menuAddToCartButton,
-                    !canAddFromSelectedRestaurant && styles.menuAddToCartButtonDisabled,
-                  ]}
-                  onPress={handleMenuAddToCart}
-                  disabled={!canAddFromSelectedRestaurant}
-                >
-                  <View style={styles.menuAddToCartInner}>
-                    <View style={styles.menuAddToCartPattern} />
-                    <FoodPatternLayer color="rgba(214, 96, 24, 0.42)" />
-                    <Text style={styles.menuAddToCartText}>
-                      {canAddFromSelectedRestaurant ? 'Add to cart' : 'Single restaurant cart'}
-                    </Text>
-                  </View>
-                </Pressable>
+                  );
+                })}
               </View>
             )}
           </View>
-        </View>
+        </ScrollView>
+
+        {cartItems.length > 0 && (
+          <Pressable
+            style={[styles.viewCartBar, { bottom: bottomInset + 18 }]}
+            onPress={() => setActiveTab(TAB_CART)}
+          >
+            <View style={styles.viewCartBarInner}>
+              <Text style={styles.viewCartBarText}>View Cart</Text>
+              <View style={styles.viewCartBarRight}>
+                <Text style={styles.viewCartBarCount}>{itemCount} items</Text>
+                <View style={styles.viewCartBarDot} />
+                <Text style={styles.viewCartBarTotal}>{formatNpr(cartSummary.total)}</Text>
+              </View>
+            </View>
+          </Pressable>
+        )}
       </View>
     );
   }
 
-  const cartDeliveryFee = cartRestaurant?.id ? getDeliveryFee(cartRestaurant.id) : 0;
-  const cartSummary = getSummary(cartDeliveryFee);
+  const bottomNavReservedHeight = 90 + Math.max(bottomInset, 10);
   const cartViewportMinHeight = Math.max(
-    windowHeight - (topInset + 50) - bottomInset,
+    windowHeight - (topInset + 50) - bottomNavReservedHeight,
     0,
   );
 
@@ -1427,7 +2299,7 @@ export function DiscoveryScreen({
         </View>
       ) : null}
 
-      {activeTab === TAB_HOME && (
+      {isHomeTab && (
         <>
           <ScrollView
             contentContainerStyle={styles.homeContent}
@@ -1436,42 +2308,77 @@ export function DiscoveryScreen({
           >
             <View style={styles.contentFrame}>
               <View style={styles.homeTopRow}>
-                <View style={styles.homeUserRow}>
-                  <View style={styles.homeAvatar}>
-                    <MaterialCommunityIcons name="cat" size={50} color="#6F7278" />
-                    <View style={styles.homeAvatarCollar} />
-                  </View>
+                <View style={styles.homeBrandLockup}>
+                  <TopLogoMark />
                   <View>
-                    <Text style={styles.homeGreeting}>Hey {firstName}</Text>
-                    <View style={styles.homeLocationRow}>
-                      <Ionicons name="location" size={13} color="#8C6B56" />
-                      <Text style={styles.homeLocation}>{homeLocationText}</Text>
-                    </View>
+                    <Text style={styles.homePageTitle}>Chito Mitho</Text>
+                    <Pressable
+                      style={styles.homeHeaderLocationButton}
+                      onPress={handleUseCurrentDeliveryLocation}
+                      accessibilityLabel="Refresh delivery location"
+                    >
+                      <Ionicons name="location-outline" size={12} color={COLORS.orange} />
+                      <Text style={styles.homeHeaderLocationText} numberOfLines={1}>
+                        {locationLoading ? 'Locating...' : homeLocationText}
+                      </Text>
+                    </Pressable>
                   </View>
                 </View>
-                <Pressable style={styles.homeBellButton}>
-                  <Ionicons name="notifications" size={21} color="#1E1E1E" />
+                <View style={styles.homeActionGroup}>
+                  <Pressable
+                    style={styles.homeIconButton}
+                    onPress={() => setActiveTab(TAB_ORDERS)}
+                    accessibilityLabel="Notifications"
+                  >
+                    <MaterialIcons name="notifications-none" size={22} color={COLORS.ink} />
+                  </Pressable>
+                  <Pressable
+                    style={styles.homeProfileAvatarButton}
+                    onPress={() => setActiveTab(TAB_PROFILE)}
+                    accessibilityLabel="Open profile"
+                  >
+                    {profileSettings.avatarUrl ? (
+                      <Image source={{ uri: profileSettings.avatarUrl }} style={styles.homeProfileAvatarImage} />
+                    ) : (
+                      <Text style={styles.homeProfileAvatarLetter}>
+                        {(profileSettings.fullName || profileSettings.username || 'U').charAt(0).toUpperCase()}
+                      </Text>
+                    )}
+                  </Pressable>
+                </View>
+              </View>
+
+              {currentOrderPreview ? (
+                <Pressable style={styles.homeOrderPopup} onPress={() => setActiveTab(TAB_ORDERS)}>
+                  <FoodImage
+                    uri={currentOrderPreview.restaurant?.image_url}
+                    style={styles.homeOrderPreviewImage}
+                    fallbackIcon="storefront"
+                  />
+                  <View style={styles.homeOrderPreviewCopy}>
+                    <Text style={styles.homeOrderPopupText} numberOfLines={1}>
+                      {currentOrderPreview.restaurant?.name || 'Current order'}
+                    </Text>
+                    <Text style={styles.homeOrderPreviewMeta} numberOfLines={1}>
+                      {getOrderStatusLabel(currentOrderPreview)} . {formatNpr(currentOrderPreview.total_amount || 0)}
+                    </Text>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={20} color={COLORS.muted} />
                 </Pressable>
+              ) : null}
+
+              <View style={styles.homeGreetingBlock}>
+                <Text style={styles.homeCravingTitle}>Hi {firstName}</Text>
+                <Text style={styles.homeCravingSubtitle}>Find food near you</Text>
               </View>
 
               <SearchBar value={searchQuery} onChangeText={setSearchQuery} />
 
-              <SectionHeader title="Offers:" />
-              <View style={styles.offerCard}>
-                <FoodPatternLayer color="rgba(214, 96, 24, 0.44)" />
-                <Text style={styles.offerHeadline} numberOfLines={1}>
-                  5% OFF
-                </Text>
-              </View>
+              {!!locationError ? (
+                <Text style={styles.errorText}>{locationError}</Text>
+              ) : null}
 
-              <View style={styles.offerDots}>
-                <View style={styles.dot} />
-                <View style={[styles.dot, styles.dotActive]} />
-                <View style={styles.dot} />
-                <View style={styles.dot} />
-              </View>
-
-              <SectionHeader title="Featured:" />
+              <SectionHeader title="Featured restaurants" />
 
               {loading && <Text style={styles.helperText}>Loading restaurants...</Text>}
               {!loading && !!error && <Text style={styles.errorText}>{error}</Text>}
@@ -1496,9 +2403,9 @@ export function DiscoveryScreen({
                 ))}
               </ScrollView>
 
-              <SectionHeader title="Non featured:" />
+              <SectionHeader title="More restaurants" />
               {!nonFeaturedRestaurants.length ? (
-                <Text style={styles.helperText}>No additional restaurants yet.</Text>
+                <Text style={styles.helperText}>You are seeing every matching restaurant above.</Text>
               ) : (
                 <View style={styles.nonFeaturedList}>
                   {nonFeaturedRestaurants.map((restaurant) => (
@@ -1522,6 +2429,53 @@ export function DiscoveryScreen({
         </>
       )}
 
+      {activeTab === TAB_FAVORITES && (
+        <>
+          <ScrollView
+            contentContainerStyle={styles.ordersContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.contentFrame}>
+              <View style={styles.ordersHeader}>
+                <Pressable style={styles.ordersBackButton} onPress={() => setActiveTab(TAB_HOME)}>
+                  <Ionicons name="arrow-back" size={20} color="#1E1E1E" />
+                </Pressable>
+                <View style={styles.screenHeaderCopy}>
+                  <Text style={styles.ordersTitle}>Favorites</Text>
+                </View>
+                <View style={styles.screenHeaderBadge}>
+                  <MaterialIcons name="favorite" size={18} color={COLORS.orange} />
+                </View>
+              </View>
+
+              {favoriteRestaurants.length ? (
+                <View style={styles.nonFeaturedList}>
+                  {favoriteRestaurants.map((restaurant) => (
+                    <NonFeaturedCard
+                      key={restaurant.id}
+                      restaurant={restaurant}
+                      onPress={() => openRestaurant(restaurant.id)}
+                    />
+                  ))}
+                </View>
+              ) : (
+                <View style={styles.ordersEmptyCard}>
+                  <Text style={styles.ordersEmptyTitle}>No favorites yet</Text>
+                  <Text style={styles.ordersEmptySubtitle}>Tap a heart on any restaurant.</Text>
+                </View>
+              )}
+            </View>
+          </ScrollView>
+          <BottomNav
+            activeTab={activeTab}
+            onChange={setActiveTab}
+            bottomInset={bottomInset}
+            cartCount={itemCount}
+          />
+        </>
+      )}
+
       {activeTab === TAB_ORDERS && (
         <>
           <ScrollView
@@ -1534,7 +2488,15 @@ export function DiscoveryScreen({
                 <Pressable style={styles.ordersBackButton} onPress={() => setActiveTab(TAB_HOME)}>
                   <Ionicons name="arrow-back" size={20} color="#1E1E1E" />
                 </Pressable>
-                <Text style={styles.ordersTitle}>Orders</Text>
+                <View style={styles.screenHeaderCopy}>
+                  <Text style={styles.ordersTitle}>Orders</Text>
+                  <Text style={styles.screenHeaderSubtitle}>
+                    {currentOrderPreview ? 'Current order' : pastOrders.length ? 'Previous orders' : 'Orders'}
+                  </Text>
+                </View>
+                <View style={styles.screenHeaderBadge}>
+                  <Ionicons name="receipt-outline" size={18} color={COLORS.orange} />
+                </View>
               </View>
 
               {ordersLoading ? (
@@ -1543,16 +2505,22 @@ export function DiscoveryScreen({
               {!ordersLoading && !!ordersError ? (
                 <Text style={styles.errorText}>{ordersError}</Text>
               ) : null}
-              {!ordersLoading && !ordersError && !visibleOrders.length ? (
+              {!ordersLoading && !ordersError && !currentOrderPreview && !pastOrders.length ? (
                 <View style={styles.ordersEmptyCard}>
-                  <Text style={styles.ordersEmptyTitle}>No orders yet</Text>
-                  <Text style={styles.ordersEmptySubtitle}>Checkout a meal and it will show up here.</Text>
+                  <Text style={styles.ordersEmptyTitle}>No current order</Text>
+                  <Text style={styles.ordersEmptySubtitle}>Previous orders will show here too.</Text>
                 </View>
               ) : null}
 
-              {!ordersLoading && !ordersError && !!visibleOrders.length ? (
+              {!ordersLoading && !ordersError && currentOrderPreview ? (
+                <View style={styles.ordersCurrentPanel}>
+                  <OrderHistoryCard key={currentOrderPreview.id} order={currentOrderPreview} large />
+                </View>
+              ) : null}
+
+              {!ordersLoading && !ordersError && !currentOrderPreview && pastOrders.length ? (
                 <View style={styles.ordersList}>
-                  {visibleOrders.map((order) => (
+                  {pastOrders.map((order) => (
                     <OrderHistoryCard key={order.id} order={order} />
                   ))}
                 </View>
@@ -1569,108 +2537,274 @@ export function DiscoveryScreen({
       )}
 
       {activeTab === TAB_CART && (
-        <ScrollView
-          contentContainerStyle={styles.cartContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={[styles.contentFrame, styles.cartFrame, { minHeight: cartViewportMinHeight }]}>
-            <View style={styles.cartHeader}>
-              <Pressable style={styles.cartHeaderIcon} onPress={() => setActiveTab(TAB_HOME)}>
-                <Ionicons name="arrow-back" size={22} color="#1E1E1E" />
-              </Pressable>
-              <Text style={styles.cartTitle}>Cart</Text>
-              <Pressable style={styles.cartHeaderIcon} onPress={clearCart}>
-                <Ionicons name="trash" size={19} color="#1E1E1E" />
-              </Pressable>
-            </View>
-
-            {!cartItems.length ? (
-              <View style={styles.cartEmptyCard}>
-                <Text style={styles.cartEmptyTitle}>Your cart is empty</Text>
-                <Text style={styles.cartEmptySubtitle}>Add items from a restaurant to start checkout.</Text>
-                <Pressable style={styles.cartBrowseButton} onPress={() => setActiveTab(TAB_HOME)}>
-                  <Text style={styles.cartBrowseButtonText}>Browse Food</Text>
+        <>
+          <ScrollView
+            contentContainerStyle={styles.cartContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={[styles.contentFrame, styles.cartFrame, { minHeight: cartViewportMinHeight }]}>
+              <View style={styles.cartHeader}>
+                <Pressable style={styles.cartHeaderIcon} onPress={() => setActiveTab(TAB_HOME)}>
+                  <Ionicons name="arrow-back" size={22} color="#1E1E1E" />
+                </Pressable>
+                <View style={styles.screenHeaderCopy}>
+                  <Text style={styles.cartTitle}>Cart</Text>
+                  <Text style={styles.screenHeaderSubtitle}>{cartSummary.itemCount} items . {formatNpr(cartSummary.subtotal)}</Text>
+                </View>
+                <Pressable
+                  style={[
+                    styles.cartHeaderIcon,
+                    styles.cartHeaderDeleteIcon,
+                    !cartItems.length && styles.cartHeaderDeleteIconDisabled,
+                  ]}
+                  onPress={clearCart}
+                  disabled={!cartItems.length}
+                  accessibilityLabel="Clear cart"
+                >
+                  <Ionicons name="trash-outline" size={18} color="#C53B33" />
                 </Pressable>
               </View>
-            ) : (
-              <View style={styles.cartBody}>
-                <View style={styles.cartItemsList}>
-                  {cartItems.map((item) => (
-                    <CartItemCard
-                      key={item.id}
-                      item={item}
-                      restaurantName={cartRestaurant?.name || 'Selected restaurant'}
-                      onIncrease={() => incrementItem(cartRestaurant, item)}
-                      onDecrease={() => decrementItem(cartRestaurant, item)}
-                    />
-                  ))}
-                </View>
 
-                <View style={styles.billCard}>
-                  <View style={styles.billTopRow}>
-                    <View style={styles.billTitleWrap}>
-                      <MaterialCommunityIcons name="receipt-text" size={20} color="#F8964F" />
-                      <Text style={styles.billTitle}>Bill</Text>
-                    </View>
-                    <View style={styles.billItemCountChip}>
-                      <Ionicons name="cart" size={12} color="#D67D3B" />
-                      <Text style={styles.billItemCount}>{cartSummary.itemCount} items</Text>
+              {!cartItems.length ? (
+                currentOrderPreview ? (
+                  <View style={styles.cartEmptyCard}>
+                    <Text style={styles.cartEmptyTitle}>Order in progress</Text>
+                    <Text style={styles.cartEmptySubtitle}>
+                      Your cart is empty, so your active order is shown here.
+                    </Text>
+                    <OrderHistoryCard order={currentOrderPreview} large />
+                    <View style={styles.cartEmptyActions}>
+                      <Pressable style={styles.cartBrowseButton} onPress={() => setActiveTab(TAB_ORDERS)}>
+                        <Text style={styles.cartBrowseButtonText}>Track Order</Text>
+                      </Pressable>
+                      <Pressable style={[styles.cartBrowseButton, styles.cartBrowseButtonSecondary]} onPress={() => setActiveTab(TAB_HOME)}>
+                        <Text style={[styles.cartBrowseButtonText, styles.cartBrowseButtonSecondaryText]}>Browse Food</Text>
+                      </Pressable>
                     </View>
                   </View>
-
-                  <View style={styles.billPanel}>
-                    <View style={styles.billRow}>
-                      <View style={styles.billLabelWrap}>
-                        <Ionicons name="pricetag" size={14} color="#8C6B56" />
-                        <Text style={styles.billLabel}>Sub Total:</Text>
+                ) : (
+                  <View style={styles.cartEmptyCard}>
+                    <Text style={styles.cartEmptyTitle}>Your cart is empty</Text>
+                    <Text style={styles.cartEmptySubtitle}>Add items from a restaurant to start checkout.</Text>
+                    <Pressable style={styles.cartBrowseButton} onPress={() => setActiveTab(TAB_HOME)}>
+                      <Text style={styles.cartBrowseButtonText}>Browse Food</Text>
+                    </Pressable>
+                  </View>
+                )
+              ) : (
+                <View style={styles.cartBody}>
+                  <View style={styles.cartItemsList}>
+                    {cartGroups.map((group) => (
+                      <View key={group.restaurant.id}>
+                        {group.items.map((item) => (
+                          <CartItemCard
+                            key={item.id}
+                            item={item}
+                            restaurantName={group.restaurant.name || 'Selected restaurant'}
+                            onIncrease={() => incrementItem(group.restaurant, item)}
+                            onDecrease={() => decrementItem(group.restaurant, item)}
+                          />
+                        ))}
                       </View>
-                      <Text style={styles.billValue}>{formatNpr(cartSummary.subtotal)}</Text>
-                    </View>
-                    <View style={styles.billRow}>
-                      <View style={styles.billLabelWrap}>
-                        <MaterialCommunityIcons name="motorbike" size={15} color="#8C6B56" />
-                        <Text style={styles.billLabel}>Delivery charge:</Text>
-                      </View>
-                      <Text style={styles.billValue}>{formatNpr(cartSummary.deliveryFee)}</Text>
-                    </View>
-                    <View style={[styles.billRow, styles.billTotalRow]}>
-                      <View style={styles.billLabelWrap}>
-                        <Ionicons name="wallet" size={15} color="#252525" />
-                        <Text style={[styles.billLabel, styles.billLabelStrong]}>Total:</Text>
-                      </View>
-                      <Text style={[styles.billValue, styles.billValueStrong]}>{formatNpr(cartSummary.total)}</Text>
-                    </View>
+                    ))}
                   </View>
 
-                  <Pressable
-                    style={[
-                      styles.checkoutButton,
-                      checkoutLoading && styles.checkoutButtonDisabled,
-                    ]}
-                    onPress={handleCheckout}
-                    disabled={checkoutLoading}
-                  >
-                    <View style={styles.checkoutButtonInner}>
-                      <View style={styles.checkoutButtonPattern} />
-                      <FoodPatternLayer color="rgba(214, 96, 24, 0.42)" />
-                      <View style={styles.checkoutButtonContent}>
-                        <MaterialCommunityIcons name="cart-check" size={18} color="#FFFFFF" />
-                        <Text style={styles.checkoutButtonText}>
-                          {checkoutLoading ? 'Placing order...' : 'Proceed'}
-                        </Text>
+                  <View style={styles.billCard}>
+                    <Text style={styles.billTitle}>Bill Details</Text>
+
+                    <View style={styles.billPanel}>
+                      <View style={styles.billRow}>
+                        <Text style={styles.billLabel}>Subtotal</Text>
+                        <Text style={styles.billValue}>{formatNpr(cartSummary.subtotal)}</Text>
+                      </View>
+                      <View style={styles.billRow}>
+                        <Text style={styles.billLabel}>Delivery Fee</Text>
+                        <Text style={styles.billValue}>{formatNpr(cartSummary.deliveryFee)}</Text>
+                      </View>
+                      <View style={[styles.billRow, styles.billTotalRow]}>
+                        <Text style={[styles.billLabel, styles.billLabelStrong]}>Total</Text>
+                        <Text style={[styles.billValue, styles.billValueStrong]}>{formatNpr(cartSummary.total)}</Text>
                       </View>
                     </View>
-                  </Pressable>
 
-                  {!!checkoutMessage && (
-                    <Text style={styles.checkoutMessage}>{checkoutMessage}</Text>
-                  )}
+                    <View style={styles.deliveryAddressBox}>
+                      <View style={styles.deliveryAddressHead}>
+                        <View style={styles.deliveryAddressTitleWrap}>
+                          <Ionicons name="location-outline" size={18} color={COLORS.orange} />
+                          <Text style={styles.deliveryAddressTitle}>Delivery address</Text>
+                        </View>
+                      </View>
+
+                      {hasSavedDeliveryAddresses ? (
+                        <View style={styles.deliveryModeTabs}>
+                          <Pressable
+                            style={[styles.deliveryModeTab, deliveryAddressMode === 'saved' && styles.deliveryModeTabActive]}
+                            onPress={() => handleDeliveryAddressModeChange('saved')}
+                            accessibilityLabel="Use saved address"
+                          >
+                            <Ionicons
+                              name="bookmarks-outline"
+                              size={15}
+                              color={deliveryAddressMode === 'saved' ? COLORS.orange : COLORS.muted}
+                            />
+                            <Text style={[styles.deliveryModeText, deliveryAddressMode === 'saved' && styles.deliveryModeTextActive]}>
+                              Saved
+                            </Text>
+                          </Pressable>
+                          <Pressable
+                            style={[styles.deliveryModeTab, deliveryAddressMode === 'search' && styles.deliveryModeTabActive]}
+                            onPress={() => handleDeliveryAddressModeChange('search')}
+                            accessibilityLabel="Search delivery address"
+                          >
+                            <Ionicons
+                              name="search-outline"
+                              size={15}
+                              color={deliveryAddressMode === 'search' ? COLORS.orange : COLORS.muted}
+                            />
+                            <Text style={[styles.deliveryModeText, deliveryAddressMode === 'search' && styles.deliveryModeTextActive]}>
+                              Search
+                            </Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+
+                      {hasSavedDeliveryAddresses && deliveryAddressMode === 'saved' ? (
+                        <View style={styles.savedAddressList}>
+                          {profileSettings.addresses.map((address) => {
+                            const selected = address.id === selectedDeliveryAddressId;
+
+                            return (
+                              <Pressable
+                                key={address.id}
+                                style={[styles.savedAddressRow, selected && styles.savedAddressRowActive]}
+                                onPress={() => handleSelectDeliveryAddress(address)}
+                              >
+                                <View style={styles.savedAddressTextWrap}>
+                                  <Text style={styles.savedAddressLabel} numberOfLines={1}>
+                                    {address.label || 'Saved address'}
+                                  </Text>
+                                  <Text style={styles.savedAddressText} numberOfLines={2}>
+                                    {getShortAddress(address.address)}
+                                  </Text>
+                                </View>
+                                <Ionicons
+                                  name={selected ? 'checkmark-circle' : 'ellipse-outline'}
+                                  size={19}
+                                  color={selected ? COLORS.orange : '#C4C0BC'}
+                                />
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      ) : (
+                        <View style={styles.cartAddressSearchRow}>
+                          <View style={styles.cartAddressSearchPicker}>
+                            <MapAddressPicker
+                              compact
+                              label="Search address"
+                              value={deliveryAddress}
+                              coordinates={(deliveryLocation || defaultAddressEntry)?.coordinates}
+                              placeholder="Search delivery address"
+                              onChange={(nextAddress) => {
+                                setDeliveryAddress(nextAddress.address);
+                                setDeliveryLocation(nextAddress);
+                                if (checkoutMessage) {
+                                  setCheckoutMessage('');
+                                }
+                              }}
+                            />
+                          </View>
+                          <Pressable
+                            style={styles.deliveryAddressIconButton}
+                            onPress={handleUseCurrentDeliveryLocation}
+                            disabled={locationLoading}
+                            accessibilityLabel="Use current location"
+                          >
+                            <MaterialIcons name={locationLoading ? 'sync' : 'my-location'} size={18} color={COLORS.orange} />
+                          </Pressable>
+                        </View>
+                      )}
+                    </View>
+
+                    {!hasValidAddress ? (
+                      <Text style={styles.addressHelperText}>
+                        {addressHelperText}
+                      </Text>
+                    ) : null}
+
+                    <View style={styles.paymentMethodCard}>
+                      <Text style={styles.paymentMethodTitle}>Payment method</Text>
+                      <View style={styles.paymentMethodOptions}>
+                        <Pressable
+                          style={[
+                            styles.paymentMethodOption,
+                            paymentMethod === PAYMENT_METHOD_CASH && styles.paymentMethodOptionActive,
+                          ]}
+                          onPress={() => setPaymentMethod(PAYMENT_METHOD_CASH)}
+                          accessibilityLabel="Pay with cash"
+                        >
+                          <Ionicons
+                            name="cash-outline"
+                            size={18}
+                            color={paymentMethod === PAYMENT_METHOD_CASH ? COLORS.orange : COLORS.muted}
+                          />
+                          <View style={styles.paymentMethodTextWrap}>
+                            <Text style={styles.paymentMethodName}>Cash</Text>
+                            <Text style={styles.paymentMethodNote}>Pay on delivery</Text>
+                          </View>
+                        </Pressable>
+                        <Pressable
+                          style={[
+                            styles.paymentMethodOption,
+                            paymentMethod === PAYMENT_METHOD_ESEWA && styles.paymentMethodOptionActive,
+                          ]}
+                          onPress={() => setPaymentMethod(PAYMENT_METHOD_ESEWA)}
+                          accessibilityLabel="Pay with eSewa"
+                        >
+                          <Ionicons
+                            name="wallet-outline"
+                            size={18}
+                            color={paymentMethod === PAYMENT_METHOD_ESEWA ? COLORS.orange : COLORS.muted}
+                          />
+                          <View style={styles.paymentMethodTextWrap}>
+                            <Text style={styles.paymentMethodName}>eSewa</Text>
+                            <Text style={styles.paymentMethodNote}>Digital wallet</Text>
+                          </View>
+                        </Pressable>
+                      </View>
+                    </View>
+
+                    <Pressable
+                      style={[
+                        styles.checkoutButton,
+                        (checkoutLoading || !hasValidAddress) && styles.checkoutButtonDisabled,
+                      ]}
+                      onPress={handleCheckout}
+                      disabled={checkoutLoading || !hasValidAddress}
+                    >
+                      <View style={styles.checkoutButtonInner}>
+                        <View style={styles.checkoutButtonContent}>
+                          <Ionicons name="card-outline" size={18} color={COLORS.white} />
+                          <Text style={styles.checkoutButtonText}>
+                            {checkoutLoading
+                              ? 'Placing order...'
+                              : paymentMethod === PAYMENT_METHOD_ESEWA
+                                ? 'Pay with eSewa'
+                                : 'Pay with cash'}
+                          </Text>
+                        </View>
+                      </View>
+                    </Pressable>
+                    {!!checkoutMessage && (
+                      <Text style={styles.checkoutMessage}>{checkoutMessage}</Text>
+                    )}
+                  </View>
                 </View>
-              </View>
-            )}
-          </View>
-        </ScrollView>
+              )}
+            </View>
+          </ScrollView>
+        </>
       )}
 
       {activeTab === TAB_PROFILE && (
@@ -1681,16 +2815,10 @@ export function DiscoveryScreen({
             keyboardShouldPersistTaps="handled"
           >
             <View style={styles.contentFrame}>
-              <View style={styles.profileHeroCard}>
-                <View style={styles.profileHeroAvatar}>
-                  <MaterialCommunityIcons name="cat" size={34} color="#6F7278" />
-                </View>
-
-                <View style={styles.profileHeroText}>
-                  <Text style={styles.profileTitle}>Your Profile</Text>
-                  <Text style={styles.profileSubtitle}>
-                    Keep your details and default delivery address up to date.
-                  </Text>
+              <View style={styles.profileTopBar}>
+                <View style={styles.screenHeaderCopy}>
+                  <Text style={styles.profileTopTitle}>Profile</Text>
+                  <Text style={styles.screenHeaderSubtitle}>{profileSettings.addresses.length} saved places</Text>
                 </View>
               </View>
 
@@ -1712,90 +2840,106 @@ export function DiscoveryScreen({
                 </View>
               ) : null}
 
-              <View style={styles.profileSummaryCard}>
-                <View style={styles.profileSummaryRow}>
-                  <View style={styles.profileSummaryItem}>
-                    <Ionicons name="person-circle" size={18} color="#F8964F" />
-                    <Text style={styles.profileSummaryValue} numberOfLines={1}>{profileSettings.fullName}</Text>
+              <View style={styles.profileIdentityCard}>
+                <Pressable style={styles.profileLargeAvatar} onPress={handlePickProfileImage} accessibilityLabel="Choose profile photo">
+                  {profileSettings.avatarUrl ? (
+                    <Image source={{ uri: profileSettings.avatarUrl }} style={styles.profileLargeAvatarImage} />
+                  ) : (
+                    <Text style={styles.profileLargeAvatarLetter}>
+                      {(profileSettings.fullName || 'U').charAt(0).toUpperCase()}
+                    </Text>
+                  )}
+                  <View style={styles.profileAvatarEditButton}>
+                    <MaterialIcons name="edit" size={15} color={COLORS.white} />
                   </View>
-                  <View style={styles.profileSummaryItem}>
-                    <Ionicons name="call" size={16} color="#F8964F" />
-                    <Text style={styles.profileSummaryValue} numberOfLines={1}>{profileSettings.phone || 'No phone saved'}</Text>
-                  </View>
+                </Pressable>
+                <Text style={styles.profileIdentityName}>{profileSettings.fullName || 'User'}</Text>
+                {!!profileSettings.username ? (
+                  <Text style={styles.profileIdentityDetail}>@{profileSettings.username}</Text>
+                ) : null}
+                <View style={styles.profileIdentityRow}>
+                  <Ionicons name="call-outline" size={14} color="#6E6761" />
+                  <Text style={styles.profileIdentityDetail}>{profileSettings.phone || 'No phone saved'}</Text>
                 </View>
-                <View style={styles.profileSummaryAddress}>
-                  <Ionicons name="location" size={16} color="#8C6B56" />
-                  <Text style={styles.profileSummaryAddressText}>
-                    {profileSettings.defaultAddress || 'No default address selected'}
+                <View style={styles.profileIdentityRow}>
+                  <Ionicons name="mail-outline" size={14} color="#6E6761" />
+                  <Text style={styles.profileIdentityDetail}>{session?.user?.email || 'No email'}</Text>
+                </View>
+              </View>
+
+              <View style={styles.profileSectionCard}>
+                <View style={styles.profileSectionHead}>
+                  <View>
+                    <Text style={styles.profileSectionTitle}>Profile</Text>
+                    <Text style={styles.profileSectionNote}>Set a username and photo.</Text>
+                  </View>
+                  <Text style={styles.profileSyncPill}>
+                    {session?.isTemporaryAuth ? 'Temp' : 'Synced'}
                   </Text>
                 </View>
-              </View>
 
-              <View style={styles.profileSectionCard}>
-                <View style={styles.profileSectionHead}>
-                  <Text style={styles.profileSectionTitle}>Personal details</Text>
+                <View style={styles.profileReadOnlyRow}>
+                  <MaterialIcons name="badge" size={18} color={COLORS.muted} />
+                  <Text style={styles.profileIdentityDetail}>{profileSettings.fullName || 'Full name'}</Text>
                 </View>
 
-                <Input
-                  label="Full name"
-                  placeholder="Your full name"
-                  value={profileForm.fullName}
-                  onChangeText={(value) => {
-                    setProfileForm((current) => ({ ...current, fullName: value }));
-                    if (profileError) {
-                      setProfileError('');
-                    }
-                  }}
-                />
+                <View style={styles.profileField}>
+                  <Text style={styles.profileFieldLabel}>Username</Text>
+                  <TextInput
+                    value={profileForm.username}
+                    onChangeText={(value) => {
+                      setProfileForm((current) => ({ ...current, username: value }));
+                      if (profileError) {
+                        setProfileError('');
+                      }
+                    }}
+                    placeholder="Add username"
+                    placeholderTextColor="#9C9691"
+                    autoCapitalize="none"
+                    style={styles.profileTextInput}
+                  />
+                </View>
 
-                <Input
-                  label="Phone number"
-                  placeholder="98XXXXXXXX"
-                  type="tel"
-                  value={profileForm.phone}
-                  onChangeText={(value) => {
-                    setProfileForm((current) => ({ ...current, phone: value }));
-                    if (profileError) {
-                      setProfileError('');
-                    }
-                  }}
-                />
+                <View style={styles.profileField}>
+                  <Text style={styles.profileFieldLabel}>Mobile number</Text>
+                  <TextInput
+                    value={profileForm.phone}
+                    onChangeText={(value) => {
+                      setProfileForm((current) => ({ ...current, phone: value }));
+                      if (profileError) {
+                        setProfileError('');
+                      }
+                    }}
+                    placeholder="9800000000"
+                    placeholderTextColor="#9C9691"
+                    keyboardType="phone-pad"
+                    maxLength={10}
+                    style={styles.profileTextInput}
+                  />
+                </View>
 
-                <Input
-                  label="New password"
-                  placeholder="At least 6 characters"
-                  type="password"
-                  value={profileForm.password}
-                  onChangeText={(value) => {
-                    setProfileForm((current) => ({ ...current, password: value }));
-                    if (profileError) {
-                      setProfileError('');
-                    }
-                  }}
-                />
-
-                <Button
-                  title="Save details"
+                <Pressable
+                  style={[styles.profileActionButton, profileSaving && styles.profileActionButtonDisabled]}
                   onPress={handleSaveProfileDetails}
-                  loading={profileSaving}
-                  style={styles.profileFullButton}
-                />
+                  disabled={profileSaving}
+                >
+                  <Text style={styles.profileActionButtonText}>
+                    {profileSaving ? 'Saving profile...' : 'Save profile'}
+                  </Text>
+                </Pressable>
               </View>
 
               <View style={styles.profileSectionCard}>
                 <View style={styles.profileSectionHead}>
-                  <Text style={styles.profileSectionTitle}>Saved addresses</Text>
+                  <View>
+                    <Text style={styles.profileSectionTitle}>Saved addresses</Text>
+                    <Text style={styles.profileSectionNote}>Saved delivery places.</Text>
+                  </View>
                   <View style={styles.profileCountChip}>
-                    <Ionicons name="location-outline" size={13} color="#D67D3B" />
-                    <Text style={styles.profileCountChipText}>
-                      {profileSettings.addresses.length}
-                    </Text>
+                    <Ionicons name="bookmark-outline" size={13} color={COLORS.orange} />
+                    <Text style={styles.profileCountChipText}>{profileSettings.addresses.length}</Text>
                   </View>
                 </View>
-
-                <Text style={styles.profileSectionNote}>
-                  Choose a default address for quick checkout and manage the rest here.
-                </Text>
 
                 <View style={styles.profileAddressList}>
                   {profileSettings.addresses.map((address) => (
@@ -1803,10 +2947,10 @@ export function DiscoveryScreen({
                       key={address.id}
                       address={address}
                       isDefault={address.id === profileSettings.defaultAddressId}
+                      canDelete={profileSettings.addresses.length > 1}
                       onSetDefault={() => handleSetDefaultAddress(address.id)}
                       onEdit={() => handleEditAddress(address)}
                       onDelete={() => handleDeleteAddress(address.id)}
-                      canDelete={profileSettings.addresses.length > 1}
                     />
                   ))}
                 </View>
@@ -1814,45 +2958,45 @@ export function DiscoveryScreen({
                 <View style={styles.profileAddressFormCard}>
                   <View style={styles.profileAddressFormHead}>
                     <Text style={styles.profileAddressFormTitle}>
-                      {editingAddressId ? 'Edit address' : 'Add a new address'}
+                      {editingAddressId ? 'Edit address' : 'Add address'}
                     </Text>
                     {editingAddressId ? (
                       <Pressable style={styles.profileAddressReset} onPress={handleCancelAddressEdit}>
-                        <Ionicons name="close" size={16} color="#1E1E1E" />
+                        <Ionicons name="close" size={17} color={COLORS.ink} />
                       </Pressable>
                     ) : null}
                   </View>
 
-                  <Input
-                    label="Label"
-                    placeholder="Home, Office, Hostel..."
-                    value={addressDraft.label}
-                    onChangeText={(value) => {
-                      setAddressDraft((current) => ({ ...current, label: value }));
-                      if (addressError) {
-                        setAddressError('');
-                      }
-                    }}
-                  />
-
-                  <Text style={styles.profileTextareaLabel}>Address</Text>
-                  <View style={styles.profileTextareaField}>
+                  <View style={styles.profileField}>
+                    <Text style={styles.profileFieldLabel}>Label</Text>
                     <TextInput
-                      multiline
-                      numberOfLines={3}
-                      placeholder="Street, area, and nearby landmark"
-                      placeholderTextColor="#8E8781"
-                      value={addressDraft.address}
+                      value={addressDraft.label}
                       onChangeText={(value) => {
-                        setAddressDraft((current) => ({ ...current, address: value }));
-                        if (addressError) {
-                          setAddressError('');
-                        }
+                        setAddressDraft((current) => ({ ...current, label: value }));
+                        setAddressError('');
                       }}
-                      style={styles.profileTextareaInput}
-                      textAlignVertical="top"
+                      placeholder="Home, Office, Hostel..."
+                      placeholderTextColor="#9C9691"
+                      style={styles.profileTextInput}
                     />
                   </View>
+
+                  <MapAddressPicker
+                    label="Address"
+                    value={addressDraft.address}
+                    coordinates={addressDraft.coordinates}
+                    placeholder="Search street, area, or landmark"
+                    onChange={(nextAddress) => {
+                      setAddressDraft((current) => ({
+                        ...current,
+                        address: nextAddress.address,
+                        formattedAddress: nextAddress.formattedAddress,
+                        coordinates: nextAddress.coordinates,
+                        placeId: nextAddress.placeId,
+                      }));
+                      setAddressError('');
+                    }}
+                  />
 
                   {!!addressError ? (
                     <Text style={styles.profileInlineError}>{addressError}</Text>
@@ -1860,36 +3004,40 @@ export function DiscoveryScreen({
 
                   <View style={styles.profileAddressButtonRow}>
                     {editingAddressId ? (
-                      <Button
-                        title="Cancel"
-                        variant="outline"
-                        onPress={handleCancelAddressEdit}
-                        style={styles.profileSecondaryButton}
-                      />
+                      <Pressable style={[styles.profileActionButton, styles.profileSecondaryButton]} onPress={handleCancelAddressEdit}>
+                        <Text style={[styles.profileActionButtonText, styles.profileSecondaryButtonText]}>Cancel</Text>
+                      </Pressable>
                     ) : null}
-
-                    <Button
-                      title={editingAddressId ? 'Update address' : 'Save address'}
+                    <Pressable
+                      style={[
+                        styles.profileActionButton,
+                        styles.profileAddressSaveButton,
+                        addressSaving && styles.profileActionButtonDisabled,
+                      ]}
                       onPress={handleSaveAddressDraft}
-                      loading={addressSaving}
-                      style={editingAddressId ? styles.profileAddressSaveButton : styles.profileFullButton}
-                    />
+                      disabled={addressSaving}
+                    >
+                      <Text style={styles.profileActionButtonText}>
+                        {addressSaving ? 'Saving address...' : editingAddressId ? 'Update address' : 'Save address'}
+                      </Text>
+                    </Pressable>
                   </View>
                 </View>
               </View>
 
-            </View>
-          </ScrollView>
-          <View style={[styles.profileStickyFooter, { bottom: Math.max(bottomInset, 8) + 96 }]}>
-            <View style={styles.profileStickyFooterInner}>
-              <Button
-                title={logoutLoading ? 'Logging out...' : 'Logout'}
+              <Pressable
+                style={styles.profileLogoutRow}
                 onPress={handleLogout}
                 disabled={logoutLoading}
-                style={[styles.profileFullButton, styles.profileDangerButton]}
-              />
+              >
+                <Ionicons name="log-out-outline" size={20} color="#B3261E" />
+                <Text style={styles.profileLogoutText}>
+                  {logoutLoading ? 'Logging out...' : 'Logout'}
+                </Text>
+              </Pressable>
+
             </View>
-          </View>
+          </ScrollView>
           <BottomNav
             activeTab={activeTab}
             onChange={setActiveTab}
@@ -1898,6 +3046,44 @@ export function DiscoveryScreen({
           />
         </>
       )}
+
+      <Modal
+        visible={Boolean(esewaPayment)}
+        animationType="slide"
+        onRequestClose={() => handleEsewaFailure('eSewa payment was closed.')}
+      >
+        <View style={[styles.esewaModal, { paddingTop: topInset + 12, paddingBottom: bottomInset + 12 }]}>
+          <View style={styles.esewaModalHeader}>
+            <View>
+              <Text style={styles.esewaModalTitle}>eSewa Sandbox</Text>
+              <Text style={styles.esewaModalSubtitle}>
+                {esewaProcessing ? 'Verifying payment...' : 'Use test ID 9806800001 and token 123456.'}
+              </Text>
+            </View>
+            <Pressable
+              style={styles.esewaModalClose}
+              onPress={() => handleEsewaFailure('eSewa payment was closed.')}
+              accessibilityLabel="Close eSewa payment"
+            >
+              <Ionicons name="close" size={22} color={COLORS.ink} />
+            </Pressable>
+          </View>
+
+          {esewaPayment?.html ? (
+            <WebView
+              source={{ html: esewaPayment.html, baseUrl: 'https://chito-mitho.local' }}
+              originWhitelist={['*']}
+              javaScriptEnabled
+              domStorageEnabled
+              startInLoadingState
+              onShouldStartLoadWithRequest={handleEsewaNavigation}
+              onNavigationStateChange={handleEsewaNavigation}
+              style={styles.esewaWebView}
+            />
+          ) : null}
+        </View>
+      </Modal>
+
     </View>
   );
 }
@@ -1905,22 +3091,21 @@ export function DiscoveryScreen({
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FFFCF9',
     paddingHorizontal: 0,
   },
   homeScreen: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FFFCF9',
   },
   cartScreen: {
-    backgroundColor: '#FFF5EF',
+    backgroundColor: '#FFFCF9',
   },
   ordersScreen: {
-    backgroundColor: '#FBF1E9',
+    backgroundColor: '#FFFCF9',
   },
   contentFrame: {
     width: '100%',
-    maxWidth: 330,
-    alignSelf: 'center',
+    paddingHorizontal: 20,
   },
   noticeBar: {
     borderRadius: 12,
@@ -1943,14 +3128,21 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   homeContent: {
-    paddingBottom: 118,
+    paddingBottom: 120,
   },
   homeTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 26,
+    marginBottom: 18,
     marginTop: 0,
+  },
+  homeBrandLockup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 0,
+    flex: 1,
   },
   homeUserRow: {
     flexDirection: 'row',
@@ -1959,27 +3151,29 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   homeAvatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: 'transparent',
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#F8964F',
     alignItems: 'center',
     justifyContent: 'center',
-    position: 'relative',
+    shadowColor: '#F8964F',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  homeAvatarCollar: {
-    position: 'absolute',
-    bottom: 11,
-    width: 8,
-    height: 3,
-    borderRadius: 4,
-    backgroundColor: '#F8964F',
+  homeAvatarLetter: {
+    color: '#FFFFFF',
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 18,
+    lineHeight: 22,
   },
   homeGreeting: {
-    color: '#F8964F',
+    color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 24,
-    lineHeight: 25,
+    fontSize: 22,
+    lineHeight: 24,
   },
   homeLocation: {
     color: '#5E5E5E',
@@ -1994,22 +3188,77 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   homeBellButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 999,
-    backgroundColor: '#F8964F',
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  homeCravingTitle: {
+    color: '#1E1E1E',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 24,
+    lineHeight: 28,
+    marginBottom: 14,
+    maxWidth: 280,
+  },
+  categoryPillsScroll: {
+    marginBottom: 4,
+    marginHorizontal: -20,
+  },
+  categoryPillsContent: {
+    paddingHorizontal: 20,
+    gap: 14,
+  },
+  categoryPill: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  categoryPillIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  categoryPillLabel: {
+    color: '#1E1E1E',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 11,
+    lineHeight: 14,
   },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: 50,
-    borderRadius: 15,
-    borderWidth: 0,
-    backgroundColor: '#FFEBDD',
-    paddingHorizontal: 22,
-    gap: 16,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 16,
+    gap: 10,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
   searchInput: {
     flex: 1,
@@ -2019,11 +3268,13 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
   },
   searchBarMenu: {
-    height: 45,
-    borderRadius: 14,
-    backgroundColor: '#FFEBDD',
-    paddingHorizontal: 22,
-    gap: 23,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    gap: 10,
   },
   searchInputMenu: {
     fontFamily: 'Outfit_500Medium',
@@ -2033,8 +3284,8 @@ const styles = StyleSheet.create({
     color: '#8E8882',
   },
   sectionHeaderRow: {
-    marginTop: 33,
-    marginBottom: 15,
+    marginTop: 24,
+    marginBottom: 10,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'baseline',
@@ -2042,7 +3293,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 17,
+    fontSize: 16,
     lineHeight: 18,
   },
   sectionAction: {
@@ -2055,109 +3306,214 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 2,
   },
-  offerCard: {
-    minHeight: 165,
-    borderRadius: 14,
-    borderWidth: 5,
-    borderColor: '#FFDCC3',
-    backgroundColor: '#F8964F',
-    overflow: 'hidden',
-    justifyContent: 'center',
-    paddingHorizontal: 20,
-  },
-  offerHeadline: {
-    color: '#FFFFFF',
-    fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 52,
-    lineHeight: 52,
-    letterSpacing: -0.6,
-    maxWidth: '96%',
-  },
-  offerDots: {
-    marginTop: 16,
-    flexDirection: 'row',
-    justifyContent: 'center',
+  mapReadyCard: {
+    marginTop: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
+    padding: 12,
     gap: 10,
   },
-  dot: {
+  mapReadyCardCompact: {
+    marginTop: 0,
+    marginBottom: 12,
+    padding: 10,
+  },
+  mapReadyTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  mapReadyTitle: {
+    color: '#1E1E1E',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  mapReadyBadge: {
+    minHeight: 24,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#F3D7C2',
+    backgroundColor: '#FFF8F2',
+    paddingHorizontal: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  mapReadyBadgeText: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 11,
+  },
+  routeLineWrap: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  routeRail: {
+    width: 14,
+    alignItems: 'center',
+    paddingTop: 3,
+    paddingBottom: 4,
+  },
+  routeDotStart: {
     width: 8,
     height: 8,
     borderRadius: 99,
-    backgroundColor: '#FFDCC3',
-  },
-  dotActive: {
     backgroundColor: '#F8964F',
+  },
+  routeLine: {
+    width: 1,
+    flex: 1,
+    minHeight: 28,
+    backgroundColor: '#E4DDD7',
+    marginVertical: 4,
+  },
+  routeDotEnd: {
+    width: 8,
+    height: 8,
+    borderRadius: 99,
+    backgroundColor: '#1E1E1E',
+  },
+  routeTextWrap: {
+    flex: 1,
+    gap: 10,
+  },
+  routeLabel: {
+    color: '#8C837C',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  routeAddress: {
+    marginTop: 1,
+    color: '#2D2B2A',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 13,
+    lineHeight: 17,
   },
   featuredList: {
     gap: 12,
     marginBottom: 16,
   },
   featuredScroller: {
-    marginBottom: 20,
+    marginBottom: 12,
   },
   featuredScrollContent: {
-    gap: 24,
-    paddingRight: 40,
-    paddingVertical: 4,
+    gap: 12,
+    paddingRight: 20,
+    paddingVertical: 2,
   },
   restaurantCard: {
-    width: 255,
+    width: 256,
     flexShrink: 0,
-    borderRadius: 10,
+    borderRadius: 16,
     overflow: 'hidden',
-    borderWidth: 4,
-    borderColor: '#FFDCC3',
-    backgroundColor: '#FFEBDD',
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
   },
   restaurantCardCover: {
-    height: 155,
+    height: 140,
     position: 'relative',
+    backgroundColor: '#F5ECE3',
+  },
+  restaurantCoverImage: {
+    ...StyleSheet.absoluteFillObject,
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  restaurantProfileThumb: {
+    position: 'absolute',
+    left: 12,
+    bottom: 12,
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    backgroundColor: '#FFFFFF',
   },
   restaurantCoverPattern: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#F8964F',
+    backgroundColor: '#F5ECE3',
+  },
+  restaurantCoverOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    paddingTop: 30,
+    backgroundColor: 'rgba(0,0,0,0.25)',
   },
   restaurantCoverTitle: {
-    position: 'absolute',
-    left: 16,
-    right: 14,
-    bottom: 15,
     color: '#FFFFFF',
     fontFamily: 'Outfit_800ExtraBold',
-    fontSize: 24,
-    lineHeight: 26,
-    letterSpacing: -0.4,
+    fontSize: 18,
+    lineHeight: 21,
+    letterSpacing: 0,
+    textShadowColor: 'rgba(0,0,0,0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  restaurantHeartButton: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   restaurantCardBody: {
     paddingHorizontal: 12,
     paddingTop: 10,
-    paddingBottom: 10,
-    gap: 2,
+    paddingBottom: 12,
+    gap: 3,
   },
   restaurantName: {
-    color: '#2A2A2A',
+    color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
     fontSize: 14,
-    lineHeight: 16,
+    lineHeight: 17,
   },
   restaurantCategory: {
-    color: '#5F5F5F',
-    fontFamily: 'Outfit_600SemiBold',
-    fontSize: 11,
+    color: '#6E6761',
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 12,
   },
   restaurantMetaRow: {
-    marginTop: 4,
+    marginTop: 6,
     flexDirection: 'row',
-    gap: 12,
+    alignItems: 'center',
+    gap: 6,
   },
   metaPair: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
   },
+  metaDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: '#C4C0BC',
+  },
   metaText: {
     color: '#1E1E1E',
-    fontFamily: 'Outfit_700Bold',
+    fontFamily: 'Outfit_600SemiBold',
     fontSize: 12,
   },
   helperText: {
@@ -2167,25 +3523,30 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   nonFeaturedList: {
-    gap: 12,
+    gap: 8,
     marginBottom: 18,
   },
   nonFeaturedCard: {
     borderRadius: 16,
-    borderWidth: 2,
-    borderColor: '#FFDCC3',
-    backgroundColor: '#FFEBDD',
-    padding: 11,
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
+    padding: 12,
     flexDirection: 'row',
     alignItems: 'stretch',
     gap: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
   nonFeaturedImageWrap: {
-    width: 86,
-    height: 86,
-    borderRadius: 14,
+    width: 72,
+    height: 72,
+    borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: '#F4A063',
+    backgroundColor: '#FFF8F2',
     position: 'relative',
   },
   nonFeaturedImage: {
@@ -2194,7 +3555,7 @@ const styles = StyleSheet.create({
   },
   nonFeaturedImagePattern: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#F8964F',
+    backgroundColor: '#FFF8F2',
   },
   nonFeaturedBody: {
     flex: 1,
@@ -2227,14 +3588,14 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   nonFeaturedChips: {
-    marginTop: 6,
+    marginTop: 4,
     flexDirection: 'row',
     gap: 8,
     flexWrap: 'wrap',
   },
   nonFeaturedChip: {
-    height: 24,
-    borderRadius: 999,
+    height: 22,
+    borderRadius: 8,
     paddingHorizontal: 8,
     backgroundColor: '#FFF3E8',
     borderWidth: 1,
@@ -2256,23 +3617,37 @@ const styles = StyleSheet.create({
   },
   bottomNav: {
     position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    minHeight: 81,
-    borderTopLeftRadius: 7,
-    borderTopRightRadius: 7,
-    backgroundColor: '#FEF8F4',
+    left: 12,
+    right: 12,
+    bottom: 8,
+    minHeight: 64,
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-evenly',
-    paddingTop: 10,
+    paddingTop: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    elevation: 12,
   },
   bottomNavItem: {
-    width: 54,
-    height: 46,
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 3,
+    paddingVertical: 6,
+  },
+  bottomNavLabel: {
+    color: '#9E9E9E',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 10,
+    lineHeight: 12,
+  },
+  bottomNavLabelActive: {
+    color: '#F8964F',
   },
   bottomNavIconWrap: {
     position: 'relative',
@@ -2281,21 +3656,21 @@ const styles = StyleSheet.create({
   },
   cartBadge: {
     position: 'absolute',
-    top: -8,
-    right: -10,
-    minWidth: 17,
-    height: 17,
+    top: -6,
+    right: -8,
+    minWidth: 16,
+    height: 16,
     borderRadius: 999,
     backgroundColor: '#F8964F',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 4,
+    paddingHorizontal: 3,
   },
   cartBadgeText: {
     color: '#FFFFFF',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 10,
-    lineHeight: 12,
+    fontSize: 9,
+    lineHeight: 11,
   },
   menuScreen: {
     backgroundColor: '#FFFFFF',
@@ -2307,41 +3682,53 @@ const styles = StyleSheet.create({
   menuMainContent: {
     flex: 1,
     position: 'relative',
-    paddingBottom: 12,
+    paddingBottom: 0,
+  },
+  menuScrollContent: {
+    paddingBottom: 80,
   },
   menuTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingLeft: 8,
+    paddingLeft: 0,
     gap: 10,
-    marginBottom: 29,
+    marginBottom: 18,
   },
   menuBackButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ECECEC',
     alignItems: 'center',
     justifyContent: 'center',
   },
   menuSearchWrap: {
-    width: 277,
+    flex: 1,
   },
   menuRestaurantCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 20,
-    height: 112,
-    backgroundColor: '#FFEBDD',
-    borderRadius: 14,
-    paddingLeft: 35,
-    paddingRight: 18,
-    marginBottom: 32,
+    gap: 12,
+    minHeight: 78,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 22,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
   menuRestaurantAvatar: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    backgroundColor: '#FFFFFF',
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: '#FFF8F2',
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
@@ -2354,7 +3741,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   menuRestaurantName: {
-    color: '#F8964F',
+    color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
     fontSize: 18,
     lineHeight: 24,
@@ -2386,147 +3773,162 @@ const styles = StyleSheet.create({
   menuFeaturedTitle: {
     color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 17,
+    fontSize: 15,
     lineHeight: 18,
-    marginBottom: 12,
+    marginBottom: 8,
   },
   menuRegularHeading: {
     color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 17,
+    fontSize: 15,
     lineHeight: 18,
-    marginTop: 22,
-    marginBottom: 12,
+    marginTop: 18,
+    marginBottom: 8,
   },
   menuPanel: {
-    borderRadius: 14,
-    backgroundColor: '#FFEBDD',
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    paddingBottom: 16,
-    gap: 12,
+    marginBottom: 4,
+    gap: 0,
   },
   menuPanelContent: {
-    gap: 12,
-    paddingBottom: 0,
+    gap: 8,
   },
   menuRegularCard: {
-    borderRadius: 14,
-    backgroundColor: '#FFEBDD',
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 12,
-    minHeight: 204,
+    marginBottom: 4,
+    gap: 8,
   },
   menuRegularHint: {
     color: '#7A7773',
     fontFamily: 'Outfit_600SemiBold',
     fontSize: 13,
     lineHeight: 18,
+    paddingVertical: 8,
   },
   menuItemRow: {
-    height: 62,
+    minHeight: 72,
     borderRadius: 14,
     backgroundColor: '#FFFFFF',
-    position: 'relative',
-    overflow: 'hidden',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-  },
-  menuItemRowActive: {
-    backgroundColor: '#FFDCC3',
-  },
-  menuItemRowPattern: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#F8964F',
-  },
-  menuItemRowInner: {
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
-    borderRadius: 12,
-    backgroundColor: 'transparent',
-    minHeight: 42,
-    zIndex: 2,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 12,
+    overflow: 'hidden',
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
+  },
+  menuItemRowActive: {
+    backgroundColor: '#FFF3E8',
+    borderColor: '#F8964F',
+    borderWidth: 1.5,
+    shadowColor: '#F8964F',
+    shadowOpacity: 0.18,
+    elevation: 3,
+  },
+  menuItemRowText: {
+    flex: 1,
+    gap: 4,
+  },
+  menuItemThumbActive: {
+    backgroundColor: '#FFD9BC',
+  },
+  menuItemIndicator: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#FFF0E6',
+    borderWidth: 1,
+    borderColor: '#F8964F',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  menuItemIndicatorActive: {
+    backgroundColor: '#F8964F',
+    borderColor: '#F8964F',
   },
   menuItemThumb: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
+    width: 50,
+    height: 50,
+    borderRadius: 10,
   },
   menuItemThumbPlaceholder: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    backgroundColor: '#D9D9D9',
+    width: 50,
+    height: 50,
+    borderRadius: 10,
+    backgroundColor: '#F5EEE8',
   },
   menuItemName: {
     flex: 1,
-    color: '#333232',
+    color: '#2A2A2A',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 16,
-    lineHeight: 20,
+    fontSize: 14,
+    lineHeight: 18,
   },
   menuItemNameActive: {
-    color: '#FFFFFF',
+    color: '#C05A10',
   },
   menuItemPrice: {
-    color: '#1E1E1E',
+    color: '#F8964F',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 16,
-    lineHeight: 20,
+    fontSize: 14,
+    lineHeight: 18,
   },
   menuItemPriceActive: {
-    color: '#FFFFFF',
+    color: '#C05A10',
   },
   foodPatternIcon: {
     position: 'absolute',
+    opacity: 1,
   },
   menuQtyControl: {
-    width: 109,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#FFDCC3',
-    padding: 3,
-  },
-  menuQtyInner: {
-    flex: 1,
-    borderRadius: 27,
-    backgroundColor: '#F8964F',
-    overflow: 'hidden',
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 15,
-    gap: 16,
-  },
-  menuQtyPattern: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#F8964F',
+    gap: 14,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#F0E8E0',
+    paddingHorizontal: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
   },
   menuQtyAction: {
-    width: 16,
-    height: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#F8964F',
     alignItems: 'center',
     justifyContent: 'center',
   },
   menuQtyValue: {
-    color: '#FFFFFF',
+    color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 16,
-    lineHeight: 20,
+    fontSize: 17,
+    lineHeight: 21,
+    minWidth: 20,
+    textAlign: 'center',
   },
   cartInlineStepper: {
     position: 'absolute',
-    right: 12,
-    top: 85,
+    right: 10,
+    top: 52,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    minHeight: 34,
-    paddingHorizontal: 8,
-    borderRadius: 17,
-    backgroundColor: '#FFF7F1',
+    minHeight: 30,
+    paddingHorizontal: 6,
+    borderRadius: 8,
+    backgroundColor: '#FAFAFA',
     borderWidth: 1,
     borderColor: '#F3E1D3',
   },
@@ -2552,40 +3954,42 @@ const styles = StyleSheet.create({
   },
   cartContent: {
     flexGrow: 1,
-    paddingBottom: 30,
+    paddingBottom: 22,
     gap: 0,
   },
   ordersContent: {
-    paddingBottom: 118,
+    paddingBottom: 120,
   },
   ordersHeader: {
     position: 'relative',
     minHeight: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 38,
+    marginBottom: 22,
   },
   ordersBackButton: {
     position: 'absolute',
     left: 0,
     width: 36,
     height: 36,
-    borderRadius: 18,
-    backgroundColor: '#F8964F',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
   },
   ordersTitle: {
     color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 28,
-    lineHeight: 31,
+    fontSize: 24,
+    lineHeight: 28,
   },
   ordersList: {
-    gap: 18,
+    gap: 10,
   },
   ordersEmptyCard: {
-    borderRadius: 20,
+    borderRadius: 8,
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 18,
     paddingVertical: 20,
@@ -2606,11 +4010,18 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   orderHistoryCard: {
-    borderRadius: 20,
+    borderRadius: 16,
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 18,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 14,
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
   orderHistoryTopRow: {
     flexDirection: 'row',
@@ -2625,8 +4036,8 @@ const styles = StyleSheet.create({
   orderHistoryAvatar: {
     width: 26,
     height: 26,
-    borderRadius: 13,
-    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    backgroundColor: '#FAFAFA',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2634,7 +4045,7 @@ const styles = StyleSheet.create({
     width: 1,
     height: 28,
     marginTop: 4,
-    backgroundColor: '#AFA29A',
+    backgroundColor: '#ECECEC',
   },
   orderHistoryMeta: {
     flex: 1,
@@ -2667,17 +4078,17 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   orderHistorySummaryShell: {
-    marginTop: 14,
-    borderRadius: 20,
-    backgroundColor: '#FFD9BF',
-    padding: 14,
-    gap: 16,
+    marginTop: 12,
+    borderRadius: 8,
+    backgroundColor: '#FAFAFA',
+    padding: 8,
+    gap: 8,
   },
   orderHistorySummaryCard: {
-    borderRadius: 17,
-    backgroundColor: '#F7F7F7',
-    paddingHorizontal: 16,
-    paddingVertical: 13,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   orderHistoryItemLine: {
     color: '#5B5753',
@@ -2695,8 +4106,8 @@ const styles = StyleSheet.create({
   orderHistoryStatusLine: {
     color: '#2B2A29',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 16,
-    lineHeight: 25,
+    fontSize: 14,
+    lineHeight: 21,
   },
   cartFrame: {
     flex: 1,
@@ -2707,32 +4118,39 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   cartItemsList: {
-    gap: 20,
+    gap: 0,
   },
   cartHeader: {
     marginTop: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 30,
+    marginBottom: 18,
   },
   cartHeaderIcon: {
     width: 40,
     height: 40,
-    borderRadius: 20,
-    backgroundColor: '#F8964F',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
   },
   cartTitle: {
     color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 26,
-    lineHeight: 28,
+    fontSize: 20,
+    lineHeight: 24,
+  },
+  cartClearText: {
+    color: '#F8964F',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 14,
   },
   cartEmptyCard: {
     marginTop: 8,
-    borderRadius: 18,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: '#EFDCCD',
     backgroundColor: '#FFF9F3',
@@ -2753,49 +4171,57 @@ const styles = StyleSheet.create({
   cartBrowseButton: {
     marginTop: 8,
     minHeight: 50,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: '#F8964F',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  cartEmptyActions: {
+    gap: 10,
+  },
+  cartBrowseButtonSecondary: {
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
   },
   cartBrowseButtonText: {
     color: '#FFFFFF',
     fontFamily: 'Outfit_700Bold',
     fontSize: 16,
   },
+  cartBrowseButtonSecondaryText: {
+    color: COLORS.ink,
+  },
   cartItemCard: {
-    minHeight: 126,
-    borderRadius: 14,
+    minHeight: 82,
+    borderRadius: 0,
     backgroundColor: '#FFFFFF',
-    paddingLeft: 16,
-    paddingTop: 14,
-    paddingBottom: 14,
-    paddingRight: 16,
+    paddingLeft: 0,
+    paddingTop: 10,
+    paddingBottom: 10,
+    paddingRight: 0,
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 16,
+    gap: 10,
     position: 'relative',
-    borderWidth: 1,
-    borderColor: '#F2DFD2',
-    shadowColor: '#D87833',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 2,
+    borderWidth: 0,
+    borderBottomWidth: 1,
+    borderColor: '#ECECEC',
+    shadowOpacity: 0,
+    elevation: 0,
   },
   cartItemImageWrap: {
-    width: 94,
-    height: 94,
-    borderRadius: 16,
-    padding: 2,
-    backgroundColor: '#FFF4EC',
-    borderWidth: 1,
-    borderColor: '#F6DECF',
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    padding: 0,
+    backgroundColor: '#FFF8F2',
+    borderWidth: 0,
   },
   cartItemImage: {
     width: '100%',
     height: '100%',
-    borderRadius: 14,
+    borderRadius: 8,
     backgroundColor: '#FFEBDD',
   },
   cartItemImagePlaceholder: {
@@ -2803,28 +4229,27 @@ const styles = StyleSheet.create({
   },
   cartItemTextWrap: {
     flex: 1,
-    minHeight: 94,
-    paddingTop: 8,
-    paddingRight: 18,
-    paddingBottom: 12,
+    minHeight: 56,
+    paddingTop: 1,
+    paddingRight: 62,
+    paddingBottom: 0,
   },
   cartItemName: {
     color: '#1E1E1E',
     fontFamily: 'Outfit_600SemiBold',
-    fontSize: 17,
+    fontSize: 15,
     lineHeight: 19,
     flex: 1,
   },
   cartItemRestaurantChip: {
     alignSelf: 'flex-start',
     maxWidth: '92%',
-    marginTop: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: '#FFF4EC',
-    borderWidth: 1,
-    borderColor: '#F6DECF',
+    marginTop: 4,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    borderRadius: 0,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
@@ -2840,30 +4265,30 @@ const styles = StyleSheet.create({
     fontFamily: 'Outfit_700Bold',
     fontSize: 17,
     lineHeight: 19,
-    marginTop: 8,
+    marginTop: 4,
   },
   billCard: {
-    minHeight: 264,
-    borderRadius: 14,
+    minHeight: 0,
+    borderRadius: 16,
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 12,
-    paddingTop: 24,
-    paddingBottom: 11,
-    marginTop: 28,
+    paddingHorizontal: 14,
+    paddingTop: 16,
+    paddingBottom: 14,
+    marginTop: 18,
     borderWidth: 1,
-    borderColor: '#F2DFD2',
+    borderColor: '#F0E8E0',
     shadowColor: '#D87833',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.06,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
     shadowRadius: 16,
-    elevation: 2,
+    elevation: 4,
   },
   billTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 18,
-    paddingHorizontal: 14,
+    marginBottom: 12,
+    paddingHorizontal: 0,
   },
   billTitleWrap: {
     flexDirection: 'row',
@@ -2873,18 +4298,18 @@ const styles = StyleSheet.create({
   billTitle: {
     color: '#1E1E1E',
     fontFamily: 'Outfit_600SemiBold',
-    fontSize: 22,
+    fontSize: 20,
     lineHeight: 24,
   },
   billItemCountChip: {
     minHeight: 28,
     paddingHorizontal: 10,
-    borderRadius: 999,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 5,
-    backgroundColor: '#FFF4EC',
+    backgroundColor: '#FAFAFA',
     borderWidth: 1,
     borderColor: '#F6DECF',
   },
@@ -2895,9 +4320,9 @@ const styles = StyleSheet.create({
     lineHeight: 14,
   },
   billPanel: {
-    minHeight: 102,
-    borderRadius: 12,
-    backgroundColor: '#FFE4D1',
+    minHeight: 94,
+    borderRadius: 8,
+    backgroundColor: '#FAFAFA',
     paddingHorizontal: 13,
     paddingVertical: 13,
     gap: 7,
@@ -2944,16 +4369,21 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   checkoutButton: {
-    marginTop: 20,
+    marginTop: 14,
     minHeight: 52,
-    borderRadius: 12,
-    backgroundColor: '#FFEDE1',
-    padding: 2,
+    borderRadius: 26,
+    backgroundColor: '#F8964F',
+    padding: 0,
     overflow: 'hidden',
+    shadowColor: '#F8964F',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 5,
   },
   checkoutButtonInner: {
     flex: 1,
-    borderRadius: 10,
+    borderRadius: 26,
     backgroundColor: '#F8964F',
     alignItems: 'center',
     justifyContent: 'center',
@@ -2982,21 +4412,26 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 12,
+    paddingHorizontal: 20,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 11,
+    gap: 10,
   },
   menuAddToCartButton: {
     flex: 1,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#FFEDE1',
-    padding: 3,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#F8964F',
     overflow: 'hidden',
+    shadowColor: '#F8964F',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 5,
   },
   menuAddToCartInner: {
     flex: 1,
-    borderRadius: 27,
+    borderRadius: 26,
     backgroundColor: '#F8964F',
     overflow: 'hidden',
     alignItems: 'center',
@@ -3044,23 +4479,30 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   profileContent: {
-    paddingBottom: 198,
+    paddingBottom: 190,
   },
   profileHeroCard: {
-    borderRadius: 22,
-    backgroundColor: '#FFEBDD',
-    paddingHorizontal: 18,
-    paddingVertical: 18,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 16,
     marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
   profileHeroAvatar: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: '#FFFFFF',
+    width: 46,
+    height: 46,
+    borderRadius: 8,
+    backgroundColor: '#FFF8F2',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -3071,8 +4513,8 @@ const styles = StyleSheet.create({
   profileTitle: {
     color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 28,
-    lineHeight: 31,
+    fontSize: 22,
+    lineHeight: 25,
   },
   profileSubtitle: {
     color: '#6E6761',
@@ -3082,7 +4524,7 @@ const styles = StyleSheet.create({
   },
   profileNoticeSuccess: {
     minHeight: 44,
-    borderRadius: 14,
+    borderRadius: 8,
     backgroundColor: '#F1FAF1',
     borderWidth: 1,
     borderColor: '#CDE9CF',
@@ -3095,7 +4537,7 @@ const styles = StyleSheet.create({
   },
   profileNoticeError: {
     minHeight: 44,
-    borderRadius: 14,
+    borderRadius: 8,
     backgroundColor: '#FFF5F5',
     borderWidth: 1,
     borderColor: '#F2C9C9',
@@ -3117,14 +4559,14 @@ const styles = StyleSheet.create({
     color: '#C12626',
   },
   profileSummaryCard: {
-    borderRadius: 18,
+    borderRadius: 8,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#F2DFD2',
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 12,
-    marginBottom: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 8,
+    marginBottom: 12,
   },
   profileSummaryRow: {
     flexDirection: 'row',
@@ -3133,11 +4575,10 @@ const styles = StyleSheet.create({
   profileSummaryItem: {
     flex: 1,
     minHeight: 44,
-    borderRadius: 14,
-    backgroundColor: '#FFF7F1',
-    borderWidth: 1,
-    borderColor: '#F6DECF',
-    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#FAFAFA',
+    borderWidth: 0,
+    paddingHorizontal: 10,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -3151,12 +4592,11 @@ const styles = StyleSheet.create({
   },
   profileSummaryAddress: {
     minHeight: 46,
-    borderRadius: 14,
-    backgroundColor: '#FFF4EC',
-    borderWidth: 1,
-    borderColor: '#F6DECF',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: '#FAFAFA',
+    borderWidth: 0,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
@@ -3169,14 +4609,19 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   profileSectionCard: {
-    borderRadius: 18,
+    borderRadius: 16,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#F2DFD2',
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 14,
-    marginBottom: 16,
+    borderColor: '#F0E8E0',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 12,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
   profileSectionHead: {
     flexDirection: 'row',
@@ -3187,8 +4632,8 @@ const styles = StyleSheet.create({
   profileSectionTitle: {
     color: '#1E1E1E',
     fontFamily: 'Outfit_700Bold',
-    fontSize: 19,
-    lineHeight: 22,
+    fontSize: 17,
+    lineHeight: 20,
   },
   profileSectionNote: {
     color: '#6E6761',
@@ -3199,10 +4644,9 @@ const styles = StyleSheet.create({
   profileCountChip: {
     minHeight: 28,
     paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: '#FFF4EC',
-    borderWidth: 1,
-    borderColor: '#F6DECF',
+    borderRadius: 8,
+    backgroundColor: '#FAFAFA',
+    borderWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -3232,7 +4676,7 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 330,
     paddingHorizontal: 0,
-    borderRadius: 18,
+    borderRadius: 8,
     backgroundColor: '#FFFFFF',
     paddingTop: 10,
     paddingBottom: 2,
@@ -3241,20 +4685,20 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   profileAddressList: {
-    gap: 12,
+    gap: 8,
   },
   profileAddressCard: {
-    borderRadius: 16,
-    backgroundColor: '#FFF7F1',
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#F6DECF',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    gap: 10,
+    borderColor: '#ECECEC',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 8,
   },
   profileAddressCardActive: {
-    backgroundColor: '#FFEBDD',
-    borderColor: '#F8C49C',
+    backgroundColor: '#FFF8F2',
+    borderColor: '#F3D7C2',
   },
   profileAddressCardHead: {
     flexDirection: 'row',
@@ -3276,7 +4720,7 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     minHeight: 24,
     paddingHorizontal: 8,
-    borderRadius: 999,
+    borderRadius: 8,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#F6D0B3',
@@ -3285,7 +4729,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   profileDefaultBadgeText: {
-    color: '#D66018',
+    color: COLORS.orange,
     fontFamily: 'Outfit_700Bold',
     fontSize: 11,
     lineHeight: 13,
@@ -3296,14 +4740,14 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   profileAddressAction: {
-    width: 32,
-    height: 32,
-    borderRadius: 14,
+    width: 30,
+    height: 30,
+    borderRadius: 8,
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#F2DFD2',
+    borderColor: '#ECECEC',
   },
   profileAddressLine: {
     flexDirection: 'row',
@@ -3317,13 +4761,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
   },
-  profileAddressFormCard: {
-    borderRadius: 16,
-    backgroundColor: '#FFF7F1',
+  profileMapSlot: {
+    minHeight: 34,
+    borderRadius: 8,
+    backgroundColor: '#FAFAFA',
     borderWidth: 1,
-    borderColor: '#F6DECF',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    borderColor: '#ECECEC',
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  profileMapSlotText: {
+    color: '#6E6761',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 12,
+    lineHeight: 15,
+  },
+  profileAddressFormCard: {
+    borderRadius: 8,
+    backgroundColor: '#FAFAFA',
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
     gap: 12,
   },
   profileAddressFormHead: {
@@ -3341,7 +4802,7 @@ const styles = StyleSheet.create({
   profileAddressReset: {
     width: 28,
     height: 28,
-    borderRadius: 14,
+    borderRadius: 8,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#F2DFD2',
@@ -3356,13 +4817,13 @@ const styles = StyleSheet.create({
     paddingLeft: 2,
   },
   profileTextareaField: {
-    minHeight: 98,
-    borderRadius: 15,
-    backgroundColor: '#F4E5D8',
-    borderWidth: 2,
-    borderColor: '#E7D8CA',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    minHeight: 88,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   profileTextareaInput: {
     flex: 1,
@@ -3384,5 +4845,3128 @@ const styles = StyleSheet.create({
   },
   profileAddressSaveButton: {
     flex: 1,
+  },
+
+  // --- View Cart Bar ---
+  viewCartBar: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#E07830',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  viewCartBarInner: {
+    backgroundColor: '#F8964F',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  viewCartBarLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  viewCartBarText: {
+    color: '#FFFFFF',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 16,
+  },
+  viewCartBarRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  viewCartBarCount: {
+    color: 'rgba(255,255,255,0.85)',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 13,
+  },
+  viewCartBarDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.5)',
+  },
+  viewCartBarTotal: {
+    color: '#FFFFFF',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 15,
+  },
+
+  // --- Profile Menu List ---
+  profileTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+  },
+  profileTopTitle: {
+    color: '#1E1E1E',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 24,
+    lineHeight: 28,
+  },
+  profileSettingsButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileIdentityCard: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  profileLargeAvatar: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#F8964F',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+    shadowColor: '#F8964F',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  profileLargeAvatarLetter: {
+    color: '#FFFFFF',
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 28,
+    lineHeight: 32,
+  },
+  profileIdentityName: {
+    color: '#1E1E1E',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 20,
+    lineHeight: 24,
+    marginBottom: 6,
+  },
+  profileIdentityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 3,
+  },
+  profileIdentityDetail: {
+    color: '#6E6761',
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 13,
+    lineHeight: 17,
+  },
+  profileMenuCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#F0E8E0',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 0,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  profileMenuGroupTitle: {
+    color: '#6E6761',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 12,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  profileMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F0EB',
+  },
+  profileMenuItemLast: {
+    borderBottomWidth: 0,
+  },
+  profileMenuItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  profileMenuItemRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  profileMenuItemText: {
+    color: '#1E1E1E',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 15,
+    lineHeight: 19,
+  },
+  profileMenuBadge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#FFF0E0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  profileMenuBadgeText: {
+    color: '#F8964F',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 12,
+  },
+  profileLogoutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FFDFDF',
+    backgroundColor: '#FFF8F8',
+    marginBottom: 20,
+  },
+  profileLogoutText: {
+    color: '#D32F2F',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 15,
+  },
+
+  // --- Reference redesign overrides ---
+  screen: {
+    flex: 1,
+    backgroundColor: COLORS.bg,
+  },
+  contentFrame: {
+    width: '100%',
+    paddingHorizontal: 18,
+  },
+  homeContent: {
+    paddingBottom: 126,
+  },
+  homeTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 22,
+  },
+  homeLocationBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  topLogoMark: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: COLORS.orange,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  homeLocationRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  homeLocation: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+    lineHeight: 17,
+    maxWidth: 220,
+  },
+  homeBellButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+  },
+  homeBellBadge: {
+    position: 'absolute',
+    top: -3,
+    right: -2,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: COLORS.orange,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  homeBellBadgeText: {
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 9,
+  },
+  homeGreeting: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 16,
+    lineHeight: 20,
+    marginBottom: 6,
+  },
+  homeCravingTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 27,
+    lineHeight: 31,
+    maxWidth: 270,
+    marginBottom: 20,
+  },
+  searchBar: {
+    minHeight: 52,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    gap: 10,
+    marginBottom: 18,
+  },
+  searchInput: {
+    flex: 1,
+    color: COLORS.text,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 13,
+    paddingVertical: 8,
+  },
+  searchFilterButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryPillsScroll: {
+    marginHorizontal: -18,
+    marginBottom: 6,
+  },
+  categoryPillsContent: {
+    paddingHorizontal: 18,
+    gap: 10,
+  },
+  categoryPill: {
+    width: 58,
+    minHeight: 72,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  categoryPillActive: {
+    borderColor: COLORS.orange,
+  },
+  categoryPillIcon: {
+    width: 34,
+    height: 30,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+  },
+  categoryPillIconActive: {
+    backgroundColor: COLORS.soft,
+  },
+  categoryPillLabel: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 10,
+    lineHeight: 13,
+  },
+  sectionHeaderRow: {
+    marginTop: 24,
+    marginBottom: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  sectionTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 16,
+    lineHeight: 20,
+  },
+  sectionAction: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 12,
+  },
+  restaurantCard: {
+    width: 150,
+    borderRadius: 8,
+    backgroundColor: COLORS.white,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.line,
+  },
+  restaurantCardCover: {
+    height: 118,
+    backgroundColor: COLORS.soft,
+    position: 'relative',
+  },
+  restaurantCoverImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  restaurantProfileThumb: {
+    position: 'absolute',
+    left: 12,
+    bottom: 12,
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    backgroundColor: '#FFFFFF',
+  },
+  restaurantDiscountBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 0,
+    backgroundColor: COLORS.orange,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderTopRightRadius: 6,
+    borderBottomRightRadius: 6,
+  },
+  restaurantDiscountText: {
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 10,
+  },
+  restaurantHeartButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  restaurantCardBody: {
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    gap: 5,
+  },
+  restaurantName: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 12,
+    lineHeight: 15,
+  },
+  restaurantMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  metaText: {
+    color: '#494650',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 11,
+  },
+  restaurantCategory: {
+    color: '#494650',
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 11,
+  },
+  fastDeliveryScroller: {
+    marginHorizontal: -18,
+  },
+  fastDeliveryScrollContent: {
+    paddingHorizontal: 18,
+    gap: 10,
+    paddingBottom: 10,
+  },
+  fastDeliveryCard: {
+    width: 128,
+    height: 108,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: COLORS.ink,
+  },
+  fastDeliveryImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  fastDeliveryTime: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    borderRadius: 7,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  fastDeliveryTimeText: {
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 11,
+  },
+  fastDeliveryName: {
+    position: 'absolute',
+    left: 8,
+    right: 8,
+    bottom: 7,
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 12,
+  },
+  bottomNav: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    minHeight: 74,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-evenly',
+    paddingTop: 8,
+  },
+  bottomNavLabel: {
+    color: '#62606A',
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 10,
+    lineHeight: 12,
+  },
+  bottomNavLabelActive: {
+    color: COLORS.orange,
+  },
+  cartBadge: {
+    position: 'absolute',
+    top: -7,
+    right: -10,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 9,
+    backgroundColor: COLORS.orange,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  foodImageFallback: {
+    backgroundColor: COLORS.soft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  menuScreen: {
+    backgroundColor: COLORS.bg,
+  },
+  menuScrollContent: {
+    paddingBottom: 108,
+  },
+  menuHero: {
+    height: 252,
+    backgroundColor: COLORS.ink,
+  },
+  menuHeroImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  menuHeroActions: {
+    position: 'absolute',
+    left: 18,
+    right: 18,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  menuHeroRightActions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  menuHeroButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuRestaurantCard: {
+    marginTop: -68,
+    borderRadius: 14,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 12,
+    flexDirection: 'row',
+    gap: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.10,
+    shadowRadius: 18,
+    elevation: 6,
+  },
+  menuRestaurantAvatar: {
+    width: 78,
+    height: 78,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: COLORS.soft,
+  },
+  menuRestaurantImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  menuRestaurantInfo: {
+    flex: 1,
+    gap: 5,
+  },
+  menuRestaurantTitleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  menuRestaurantName: {
+    flex: 1,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 16,
+    lineHeight: 20,
+  },
+  menuOpenBadge: {
+    borderRadius: 7,
+    backgroundColor: '#E8F8E4',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  menuOpenBadgeText: {
+    color: '#2F7C2F',
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 10,
+  },
+  menuRestaurantMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  menuRestaurantMetaText: {
+    color: COLORS.text,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 11,
+  },
+  menuDotText: {
+    color: '#9C9691',
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 12,
+  },
+  menuRestaurantAddress: {
+    color: '#56515A',
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  menuTabs: {
+    paddingTop: 18,
+    paddingBottom: 12,
+    gap: 20,
+  },
+  menuTab: {
+    paddingBottom: 8,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  menuTabActive: {
+    borderBottomColor: COLORS.orange,
+  },
+  menuTabText: {
+    color: '#4E4B54',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+  },
+  menuTabTextActive: {
+    color: COLORS.orange,
+  },
+  menuSectionTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 18,
+    lineHeight: 22,
+    marginBottom: 8,
+  },
+  menuFoodList: {
+    borderRadius: 14,
+    backgroundColor: COLORS.white,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.line,
+  },
+  menuFoodCard: {
+    minHeight: 118,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+    padding: 12,
+    flexDirection: 'row',
+    gap: 12,
+  },
+  menuFoodText: {
+    flex: 1,
+    paddingTop: 2,
+  },
+  menuFoodTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  menuFoodName: {
+    flexShrink: 1,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  menuFoodBadge: {
+    borderRadius: 6,
+    backgroundColor: '#FFE9DC',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  menuFoodBadgeText: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 9,
+  },
+  menuFoodDescription: {
+    marginTop: 6,
+    color: '#56515A',
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  menuFoodPrice: {
+    marginTop: 8,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+  },
+  menuFoodImageWrap: {
+    width: 108,
+    height: 92,
+    position: 'relative',
+  },
+  menuFoodImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 8,
+    resizeMode: 'cover',
+  },
+  menuFoodAddButton: {
+    position: 'absolute',
+    right: 0,
+    bottom: -6,
+    minWidth: 58,
+    height: 28,
+    borderRadius: 7,
+    backgroundColor: COLORS.orange,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 9,
+  },
+  menuFoodAddButtonDisabled: {
+    opacity: 0.45,
+  },
+  menuFoodAddText: {
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 12,
+  },
+  cartInlineStepper: {
+    position: 'absolute',
+    right: 0,
+    bottom: -6,
+    top: undefined,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    height: 30,
+    paddingHorizontal: 6,
+    borderRadius: 7,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: '#FFD7C5',
+  },
+  cartInlineValue: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 13,
+    minWidth: 14,
+    textAlign: 'center',
+  },
+  viewCartBar: {
+    position: 'absolute',
+    left: 18,
+    right: 18,
+    borderRadius: 10,
+    overflow: 'hidden',
+    shadowColor: COLORS.orange,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  viewCartBarInner: {
+    backgroundColor: COLORS.orange,
+    minHeight: 50,
+    paddingHorizontal: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  viewCartBarText: {
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 15,
+  },
+
+  cartContent: {
+    flexGrow: 1,
+    paddingBottom: 26,
+  },
+  cartHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 18,
+  },
+  cartHeaderIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cartTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 18,
+  },
+  cartClearText: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 12,
+  },
+  cartItemCard: {
+    minHeight: 90,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+    backgroundColor: COLORS.bg,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    gap: 12,
+    position: 'relative',
+  },
+  cartItemImageWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: COLORS.soft,
+  },
+  cartItemImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 8,
+    resizeMode: 'cover',
+  },
+  cartItemTextWrap: {
+    flex: 1,
+    minHeight: 72,
+    paddingRight: 92,
+  },
+  cartItemName: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  cartItemRestaurantChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 5,
+  },
+  cartItemPrice: {
+    marginTop: 5,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+  },
+  promoRow: {
+    marginTop: 18,
+    minHeight: 56,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+  },
+  promoIconBox: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: COLORS.soft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  promoRowText: {
+    flex: 1,
+    color: COLORS.text,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+  },
+  billCard: {
+    marginTop: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 12,
+  },
+  billTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+    marginBottom: 12,
+  },
+  billPanel: {
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    gap: 12,
+  },
+  billLabel: {
+    color: COLORS.text,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 13,
+  },
+  billValue: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+  },
+  billTotalRow: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.line,
+    paddingTop: 14,
+    marginTop: 2,
+  },
+  billLabelStrong: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+  },
+  billValueStrong: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 18,
+  },
+  deliverToTitle: {
+    marginTop: 20,
+    marginBottom: 10,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+  },
+  deliverToRow: {
+    minHeight: 52,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  deliverToText: {
+    flex: 1,
+    color: COLORS.text,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 12,
+  },
+  deliverToChange: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 11,
+  },
+  checkoutButton: {
+    marginTop: 20,
+    minHeight: 54,
+    borderRadius: 8,
+    backgroundColor: COLORS.orange,
+    overflow: 'hidden',
+  },
+  checkoutButtonInner: {
+    flex: 1,
+    backgroundColor: COLORS.orange,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkoutButtonText: {
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 15,
+  },
+  savingsText: {
+    marginTop: 18,
+    textAlign: 'center',
+    color: '#0D751D',
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 12,
+  },
+
+  ordersHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 18,
+    minHeight: 38,
+  },
+  ordersBackButton: {
+    position: 'absolute',
+    left: 0,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ordersTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 20,
+  },
+  orderHistoryCard: {
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 12,
+    marginBottom: 12,
+  },
+  orderHistoryTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  orderHistoryImage: {
+    width: 68,
+    height: 68,
+    borderRadius: 8,
+    resizeMode: 'cover',
+  },
+  orderHistoryRestaurant: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 15,
+  },
+  orderHistoryMetaText: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 12,
+  },
+  orderHistoryStatusLine: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 12,
+  },
+  orderHistorySummaryShell: {
+    marginTop: 12,
+    gap: 10,
+  },
+  orderHistorySummaryCard: {
+    borderRadius: 8,
+    backgroundColor: '#FAFAFA',
+    padding: 10,
+  },
+  orderHistoryFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  orderReorderButton: {
+    minHeight: 32,
+    borderRadius: 8,
+    backgroundColor: COLORS.orange,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  orderReorderText: {
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 12,
+  },
+
+  profileTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  profileTopTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 20,
+  },
+  profileIdentityCard: {
+    alignItems: 'center',
+    borderRadius: 0,
+    borderWidth: 0,
+    backgroundColor: COLORS.white,
+    marginHorizontal: -18,
+    marginBottom: 14,
+    paddingBottom: 22,
+    overflow: 'hidden',
+  },
+  profilePatternHero: {
+    height: 166,
+    width: '100%',
+    backgroundColor: COLORS.orange,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  profileLargeAvatar: {
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    backgroundColor: COLORS.ink,
+    borderWidth: 5,
+    borderColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -50,
+    marginBottom: 10,
+  },
+  profileLargeAvatarLetter: {
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 34,
+  },
+  profileIdentityName: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 18,
+    marginBottom: 4,
+  },
+  profileMenuCard: {
+    borderRadius: 0,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    marginBottom: 16,
+  },
+  profileMenuGroupTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+    textTransform: 'none',
+    letterSpacing: 0,
+    marginBottom: 10,
+  },
+  profileMenuItem: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 0,
+    paddingVertical: 6,
+  },
+  profileMenuItemText: {
+    color: COLORS.text,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 14,
+  },
+  profileLogoutRow: {
+    minHeight: 48,
+    borderRadius: 8,
+    borderWidth: 0,
+    backgroundColor: '#F3F1EF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  profileLogoutText: {
+    color: COLORS.text,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+  },
+
+  // --- Brand cleanup overrides ---
+  topLogoMark: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topLogoImage: {
+    width: 28,
+    height: 28,
+  },
+  homeCravingTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 28,
+    lineHeight: 32,
+    maxWidth: 260,
+    marginBottom: 18,
+  },
+  restaurantCard: {
+    width: 170,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.line,
+  },
+  restaurantCardCover: {
+    height: 126,
+    backgroundColor: COLORS.soft,
+  },
+  restaurantHeartButton: {
+    display: 'none',
+  },
+  nonFeaturedCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 10,
+  },
+  nonFeaturedImageWrap: {
+    width: 74,
+    height: 74,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: COLORS.soft,
+  },
+  nonFeaturedName: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 15,
+    lineHeight: 18,
+    flex: 1,
+  },
+  nonFeaturedPrice: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+  },
+  nonFeaturedChip: {
+    minHeight: 24,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    backgroundColor: COLORS.surfaceMuted,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  bottomNav: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    minHeight: 72,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-evenly',
+    paddingTop: 8,
+  },
+  cartItemCard: {
+    minHeight: 90,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+    backgroundColor: COLORS.bg,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    gap: 12,
+    position: 'relative',
+  },
+  billCard: {
+    marginTop: 16,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 14,
+  },
+  deliverToRow: {
+    minHeight: 50,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  profileIdentityCard: {
+    alignItems: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    marginBottom: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+  },
+  profileBrandLogo: {
+    width: 42,
+    height: 42,
+    marginBottom: 12,
+  },
+  profileLargeAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: COLORS.soft,
+    borderWidth: 1,
+    borderColor: '#FFDCC3',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
+  profileLargeAvatarLetter: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 24,
+  },
+  profileLargeAvatarImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 32,
+  },
+  profileMenuCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 0,
+    marginBottom: 16,
+  },
+  profileMenuGroupTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+    marginBottom: 8,
+  },
+  profileLogoutRow: {
+    minHeight: 48,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  screen: {
+    flex: 1,
+    backgroundColor: '#FBFBFB',
+  },
+  contentFrame: {
+    width: '100%',
+    paddingHorizontal: 16,
+  },
+  homeContent: {
+    paddingBottom: 132,
+  },
+  homeTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+  homeLocationBlock: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  homeLocation: {
+    flex: 1,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+    lineHeight: 17,
+  },
+  homeGreeting: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 14,
+    lineHeight: 18,
+    marginBottom: 5,
+  },
+  homeCravingTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 26,
+    lineHeight: 30,
+    maxWidth: 280,
+    marginBottom: 16,
+  },
+  searchBar: {
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 13,
+    gap: 9,
+    marginBottom: 14,
+  },
+  searchFilterButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    backgroundColor: COLORS.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterChipsScroll: {
+    marginHorizontal: -16,
+    marginBottom: 2,
+  },
+  filterChipsScrollCompact: {
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  filterChipsContent: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  filterChipsContentCompact: {
+    paddingHorizontal: 0,
+    gap: 8,
+  },
+  filterChip: {
+    minHeight: 36,
+    maxWidth: 144,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  filterChipCompact: {
+    minHeight: 34,
+    paddingHorizontal: 11,
+  },
+  filterChipActive: {
+    borderColor: '#FFD0AD',
+    backgroundColor: '#FFF5EC',
+  },
+  filterChipLabel: {
+    color: '#5D5A62',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 12,
+    lineHeight: 15,
+  },
+  filterChipLabelActive: {
+    color: COLORS.orangeHot,
+  },
+  sectionHeaderRow: {
+    marginTop: 20,
+    marginBottom: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  restaurantCard: {
+    width: 174,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    shadowColor: '#1E1E1E',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 1,
+  },
+  restaurantCardCover: {
+    height: 122,
+    backgroundColor: COLORS.soft,
+  },
+  restaurantCardBody: {
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    gap: 5,
+  },
+  nonFeaturedCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    padding: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 9,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  bottomNav: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    minHeight: 72,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-evenly',
+    paddingTop: 8,
+  },
+  bottomNavItem: {
+    flex: 1,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    paddingVertical: 4,
+  },
+  bottomNavLabel: {
+    color: '#62606A',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 10,
+    lineHeight: 12,
+  },
+  bottomNavLabelActive: {
+    color: COLORS.orangeHot,
+  },
+  viewCartBar: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: COLORS.orange,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  viewCartBarInner: {
+    backgroundColor: COLORS.orangeHot,
+    minHeight: 50,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  menuScreen: {
+    backgroundColor: '#FBFBFB',
+  },
+  menuScrollContent: {
+    paddingBottom: 108,
+  },
+  menuHero: {
+    height: 218,
+    backgroundColor: COLORS.ink,
+  },
+  menuRestaurantCard: {
+    marginTop: -46,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 12,
+    flexDirection: 'row',
+    gap: 12,
+    shadowColor: '#1E1E1E',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 2,
+  },
+  menuRestaurantAvatar: {
+    width: 68,
+    height: 68,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: COLORS.soft,
+  },
+  menuFoodList: {
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.line,
+  },
+  menuFoodCard: {
+    minHeight: 112,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+    padding: 12,
+    flexDirection: 'row',
+    gap: 12,
+  },
+  cartContent: {
+    flexGrow: 1,
+    paddingBottom: 122,
+  },
+  cartHeaderIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cartItemCard: {
+    minHeight: 90,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+    backgroundColor: 'transparent',
+    paddingVertical: 12,
+    flexDirection: 'row',
+    gap: 12,
+    position: 'relative',
+  },
+  billCard: {
+    marginTop: 16,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 14,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  checkoutButton: {
+    marginTop: 20,
+    minHeight: 54,
+    borderRadius: 10,
+    backgroundColor: COLORS.orangeHot,
+    overflow: 'hidden',
+    shadowColor: COLORS.orange,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  checkoutButtonInner: {
+    flex: 1,
+    backgroundColor: COLORS.orangeHot,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkoutButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  ordersContent: {
+    paddingBottom: 128,
+  },
+  orderHistoryCard: {
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 12,
+    marginBottom: 12,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  profileContent: {
+    paddingBottom: 132,
+  },
+  profileIdentityCard: {
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    marginBottom: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+  },
+  profileMenuCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 0,
+    marginBottom: 14,
+  },
+  profileMenuItemLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  profileLogoutRow: {
+    minHeight: 48,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 16,
+  },
+  screen: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  homeScreen: {
+    backgroundColor: COLORS.white,
+  },
+  cartScreen: {
+    backgroundColor: COLORS.white,
+  },
+  ordersScreen: {
+    backgroundColor: COLORS.white,
+  },
+  menuScreen: {
+    backgroundColor: COLORS.white,
+  },
+  homeContent: {
+    paddingBottom: 124,
+    paddingTop: 4,
+  },
+  homeTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 26,
+  },
+  homeGreeting: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 15,
+    lineHeight: 19,
+    marginBottom: 8,
+  },
+  homeCravingTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 27,
+    lineHeight: 32,
+    maxWidth: 290,
+    marginBottom: 22,
+  },
+  searchBar: {
+    minHeight: 50,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    gap: 10,
+    marginBottom: 22,
+  },
+  searchBarMenu: {
+    minHeight: 48,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    marginTop: 18,
+    marginBottom: 18,
+  },
+  sectionHeaderRow: {
+    marginTop: 30,
+    marginBottom: 14,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+  },
+  featuredScroller: {
+    marginBottom: 18,
+  },
+  featuredScrollContent: {
+    gap: 14,
+    paddingRight: 20,
+    paddingVertical: 4,
+  },
+  nonFeaturedList: {
+    gap: 12,
+    marginBottom: 26,
+  },
+  restaurantCard: {
+    width: 178,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  restaurantCardCover: {
+    height: 124,
+    backgroundColor: COLORS.soft,
+  },
+  nonFeaturedCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    marginBottom: 0,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  menuHero: {
+    height: 208,
+    backgroundColor: COLORS.ink,
+  },
+  menuRestaurantCard: {
+    marginTop: -36,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 14,
+    flexDirection: 'row',
+    gap: 12,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  menuSectionTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 18,
+    lineHeight: 22,
+    marginBottom: 12,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+  },
+  menuFoodCard: {
+    minHeight: 104,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  menuFoodText: {
+    flex: 1,
+    paddingTop: 0,
+  },
+  menuFoodActionWrap: {
+    minWidth: 78,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  menuFoodAddButton: {
+    position: 'relative',
+    right: undefined,
+    bottom: undefined,
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: COLORS.orange,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 0,
+  },
+  inlineStepperStatic: {
+    minHeight: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  inlineStepperAction: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    backgroundColor: COLORS.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inlineStepperValue: {
+    minWidth: 16,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  cartContent: {
+    flexGrow: 1,
+    paddingBottom: 128,
+  },
+  cartItemCard: {
+    minHeight: 78,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    position: 'relative',
+  },
+  cartItemTextWrap: {
+    flex: 1,
+    minHeight: 0,
+    paddingRight: 0,
+  },
+  billCard: {
+    marginTop: 22,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 16,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  deliveryAddressBox: {
+    marginTop: 22,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    padding: 14,
+    gap: 12,
+  },
+  deliveryAddressHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  deliveryAddressTitleWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  deliveryAddressTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  deliveryAddressStatus: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 11,
+  },
+  deliveryAddressStatusReady: {
+    color: COLORS.orange,
+  },
+  deliveryModeTabs: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  deliveryModeTab: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  deliveryModeTabActive: {
+    borderColor: COLORS.orange,
+    backgroundColor: COLORS.soft,
+  },
+  deliveryModeText: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 12,
+  },
+  deliveryModeTextActive: {
+    color: COLORS.orange,
+  },
+  savedAddressList: {
+    gap: 8,
+  },
+  savedAddressRow: {
+    minHeight: 58,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  savedAddressRowActive: {
+    borderColor: COLORS.orange,
+    backgroundColor: COLORS.soft,
+  },
+  savedAddressTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  savedAddressLabel: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 13,
+    lineHeight: 16,
+  },
+  savedAddressText: {
+    marginTop: 3,
+    color: COLORS.muted,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  addressHelperText: {
+    marginTop: 10,
+    color: '#C12626',
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  addressHelperTextReady: {
+    color: COLORS.muted,
+  },
+  checkoutButton: {
+    marginTop: 22,
+    minHeight: 54,
+    borderRadius: 10,
+    backgroundColor: COLORS.orange,
+    overflow: 'hidden',
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  checkoutButtonInner: {
+    flex: 1,
+    backgroundColor: COLORS.orange,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  restaurantCard: {
+    width: 224,
+    minHeight: 276,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  restaurantCardCover: {
+    height: 142,
+    backgroundColor: COLORS.soft,
+  },
+  restaurantCardBody: {
+    minHeight: 134,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 6,
+  },
+  restaurantName: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 16,
+    lineHeight: 20,
+  },
+  restaurantAddress: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  restaurantMetaRow: {
+    marginTop: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  restaurantCategory: {
+    color: COLORS.text,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 12,
+    lineHeight: 15,
+  },
+  restaurantHeartButton: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    display: 'flex',
+  },
+  restaurantHeartButtonActive: {
+    backgroundColor: COLORS.orange,
+  },
+  homeBellButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  orderViewSwitch: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 16,
+  },
+  orderViewButton: {
+    flex: 1,
+    minHeight: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  orderViewButtonActive: {
+    borderColor: COLORS.orange,
+    backgroundColor: COLORS.soft,
+  },
+  orderViewButtonText: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 12,
+  },
+  orderViewButtonTextActive: {
+    color: COLORS.orange,
+  },
+  deliveryAddressActions: {
+    alignItems: 'flex-end',
+    gap: 6,
+  },
+  inlineLocationButton: {
+    minHeight: 30,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FFD7C5',
+    backgroundColor: COLORS.soft,
+    paddingHorizontal: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  inlineLocationButtonText: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 11,
+  },
+  profileSyncPill: {
+    alignSelf: 'flex-start',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FFD7C5',
+    backgroundColor: COLORS.soft,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    color: COLORS.orange,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 11,
+    overflow: 'hidden',
+  },
+  profileField: {
+    gap: 7,
+  },
+  profileFieldLabel: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+    lineHeight: 16,
+  },
+  profileTextInput: {
+    minHeight: 48,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 14,
+  },
+  profileActionButton: {
+    minHeight: 48,
+    borderRadius: 10,
+    backgroundColor: COLORS.orange,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+  },
+  profileActionButtonDisabled: {
+    opacity: 0.6,
+  },
+  profileActionButtonText: {
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+  },
+  profileSecondaryButton: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+  },
+  profileSecondaryButtonText: {
+    color: COLORS.ink,
+  },
+  profileInlineLocationButton: {
+    minHeight: 42,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#FFD7C5',
+    backgroundColor: COLORS.soft,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  profileInlineLocationButtonText: {
+    color: COLORS.orange,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 13,
+  },
+  profileSectionCard: {
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 14,
+    gap: 14,
+    marginBottom: 14,
+  },
+  profileAddressFormCard: {
+    borderRadius: 10,
+    backgroundColor: COLORS.surfaceMuted,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    padding: 12,
+    gap: 12,
+  },
+  paymentMethodCard: {
+    marginTop: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.surfaceMuted,
+    padding: 12,
+    gap: 10,
+  },
+  paymentMethodTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+  },
+  paymentMethodOptions: {
+    gap: 8,
+  },
+  paymentMethodOption: {
+    minHeight: 58,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  paymentMethodOptionActive: {
+    borderColor: '#FFD7C5',
+    backgroundColor: COLORS.soft,
+  },
+  paymentMethodTextWrap: {
+    flex: 1,
+  },
+  paymentMethodName: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+  },
+  paymentMethodNote: {
+    marginTop: 2,
+    color: COLORS.muted,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 12,
+  },
+  esewaModal: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  esewaModalHeader: {
+    minHeight: 68,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  esewaModalTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 18,
+  },
+  esewaModalSubtitle: {
+    marginTop: 3,
+    color: COLORS.muted,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 12,
+  },
+  esewaModalClose: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  esewaWebView: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  homeTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  homePageTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 23,
+    lineHeight: 27,
+  },
+  homeTopKicker: {
+    marginTop: 2,
+    color: COLORS.muted,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 12,
+    lineHeight: 15,
+  },
+  homeActionGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  homeIconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  homeIconButtonDark: {
+    borderColor: COLORS.ink,
+    backgroundColor: COLORS.ink,
+  },
+  homeLocationCard: {
+    minHeight: 62,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  homeLocationCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  homeLocationLabel: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 10,
+    lineHeight: 13,
+    textTransform: 'uppercase',
+  },
+  homeLocation: {
+    marginTop: 2,
+    flex: 1,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 15,
+    lineHeight: 19,
+  },
+  homeGreeting: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 13,
+    lineHeight: 17,
+    marginBottom: 4,
+  },
+  homeCravingTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 25,
+    lineHeight: 29,
+    maxWidth: 280,
+    marginBottom: 14,
+  },
+  topLogoMark: {
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    backgroundColor: '#FFF1E6',
+    borderWidth: 1,
+    borderColor: '#FFD7C5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topLogoImage: {
+    width: 29,
+    height: 29,
+  },
+  locationModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(30, 30, 30, 0.34)',
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  locationModalCard: {
+    width: '100%',
+    maxWidth: 390,
+    borderRadius: 18,
+    backgroundColor: COLORS.white,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+  },
+  locationModalIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: COLORS.ink,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  locationModalTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 24,
+    lineHeight: 29,
+  },
+  locationModalSubtitle: {
+    marginTop: 6,
+    color: COLORS.muted,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  locationFoundCard: {
+    marginTop: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FFD7C5',
+    backgroundColor: COLORS.soft,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 9,
+  },
+  locationFoundText: {
+    flex: 1,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  locationErrorCard: {
+    marginTop: 12,
+    borderRadius: 10,
+    backgroundColor: '#FFF2F1',
+    padding: 10,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 7,
+  },
+  locationErrorText: {
+    flex: 1,
+    color: '#A82E2E',
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  locationPrimaryButton: {
+    minHeight: 50,
+    borderRadius: 12,
+    backgroundColor: COLORS.orange,
+    marginTop: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  locationPrimaryButtonText: {
+    color: COLORS.white,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 15,
+  },
+  locationButtonDisabled: {
+    opacity: 0.62,
+  },
+  locationSecondaryButton: {
+    minHeight: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  locationSecondaryButtonText: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+  },
+  locationModalActions: {
+    marginTop: 10,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  locationSmallButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  locationSmallButtonText: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 13,
+  },
+  locationTextButton: {
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 6,
+  },
+  locationTextButtonText: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 13,
+  },
+  ordersHeader: {
+    minHeight: 50,
+    marginBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  cartHeader: {
+    minHeight: 50,
+    marginBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  profileTopBar: {
+    minHeight: 50,
+    marginBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  screenHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  screenHeaderSubtitle: {
+    marginTop: 2,
+    color: COLORS.muted,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 12,
+    lineHeight: 15,
+  },
+  screenHeaderBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FFD7C5',
+    backgroundColor: COLORS.soft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ordersCartCard: {
+    minHeight: 62,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 14,
+  },
+  ordersCartTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 15,
+  },
+  ordersSectionLabel: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 12,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  ordersDivider: {
+    height: 1,
+    backgroundColor: COLORS.line,
+    marginVertical: 14,
+  },
+  ordersTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 23,
+    lineHeight: 27,
+  },
+  cartTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 23,
+    lineHeight: 27,
+  },
+  profileTopTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 23,
+    lineHeight: 27,
+  },
+  ordersBackButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cartHeaderIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileAvatarEditButton: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: COLORS.orange,
+    borderWidth: 2,
+    borderColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileReadOnlyRow: {
+    minHeight: 46,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.surfaceMuted,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  homeProfileAvatarButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  homeProfileAvatarImage: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+  },
+  homeProfileAvatarLetter: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 16,
+  },
+  homeBrandLockup: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+  },
+  homePageTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 18,
+    lineHeight: 22,
+  },
+  homeHeaderLocationButton: {
+    marginTop: 2,
+    maxWidth: 190,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  homeHeaderLocationText: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 12,
+    lineHeight: 15,
+  },
+  homeActionGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  homeIconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  homeGreetingBlock: {
+    marginTop: 20,
+    marginBottom: 12,
+  },
+  homeCravingTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 24,
+    lineHeight: 29,
+  },
+  homeCravingSubtitle: {
+    marginTop: 3,
+    color: COLORS.muted,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  homeLocationCard: {
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+    minHeight: 34,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    marginTop: 10,
+    marginBottom: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  homeLocation: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 13,
+    lineHeight: 17,
+  },
+  homeOrderPopup: {
+    minHeight: 62,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FFE0CC',
+    backgroundColor: '#FFF8F3',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  homeOrderPopupText: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+  },
+  homeOrderPreviewImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: COLORS.soft,
+  },
+  homeOrderPreviewCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  homeOrderPreviewMeta: {
+    marginTop: 2,
+    color: COLORS.muted,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 12,
+    lineHeight: 15,
+  },
+  topLogoMark: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topLogoImage: {
+    width: 32,
+    height: 32,
+  },
+  restaurantCard: {
+    width: 232,
+    minHeight: 202,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  restaurantCardCover: {
+    height: 94,
+    backgroundColor: COLORS.soft,
+  },
+  restaurantCardBody: {
+    minHeight: 108,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 5,
+  },
+  restaurantName: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 15,
+    lineHeight: 18,
+  },
+  restaurantAddress: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 12,
+    lineHeight: 15,
+  },
+  restaurantMetaRow: {
+    marginTop: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  searchBar: {
+    width: '94%',
+    alignSelf: 'center',
+    minHeight: 48,
+    borderRadius: 13,
+    borderWidth: 1.4,
+    borderColor: '#D3CCC5',
+    backgroundColor: COLORS.white,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  searchInput: {
+    flex: 1,
+    color: COLORS.ink,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 14,
+    paddingVertical: 8,
+  },
+  searchFilterButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuHeroButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  restaurantCategory: {
+    color: COLORS.text,
+    fontFamily: 'Outfit_700Bold',
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  profileLogoutRow: {
+    minHeight: 48,
+    borderRadius: 10,
+    backgroundColor: '#FFF1F0',
+    borderWidth: 1,
+    borderColor: '#F1C6C2',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  profileLogoutText: {
+    color: '#B3261E',
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 14,
+  },
+  cartHeaderDeleteIcon: {
+    borderColor: '#F1C6C2',
+    backgroundColor: '#FFF1F0',
+  },
+  cartHeaderDeleteIconDisabled: {
+    opacity: 0.45,
+  },
+  cartDeleteStepperAction: {
+    borderColor: '#F1C6C2',
+    backgroundColor: '#FFF1F0',
+  },
+  deliveryAddressIconButton: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    borderWidth: 1,
+    borderColor: '#FFE0CC',
+    backgroundColor: COLORS.soft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cartAddressSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 10,
+  },
+  cartAddressSearchPicker: {
+    flex: 1,
+    minWidth: 0,
+  },
+  billCard: {
+    marginTop: 20,
+    borderRadius: 0,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+    padding: 0,
+    gap: 18,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  billPanel: {
+    minHeight: 142,
+    borderRadius: 0,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: COLORS.line,
+    paddingVertical: 16,
+    paddingHorizontal: 4,
+    justifyContent: 'space-between',
+  },
+  deliveryAddressBox: {
+    marginTop: 2,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    padding: 14,
+    gap: 12,
+  },
+  paymentMethodCard: {
+    marginTop: 0,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    backgroundColor: COLORS.white,
+    padding: 14,
+    gap: 10,
+  },
+  paymentMethodOptions: {
+    gap: 8,
+  },
+  paymentMethodOption: {
+    minHeight: 56,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FFD7C5',
+    backgroundColor: COLORS.soft,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  ordersCurrentPanel: {
+    flex: 1,
+    minHeight: 0,
+  },
+  orderHistoryCardLarge: {
+    minHeight: 0,
+  },
+  ordersContent: {
+    flexGrow: 1,
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+  },
+  cartContent: {
+    flexGrow: 1,
+    paddingHorizontal: 16,
+    paddingBottom: 150,
+  },
+  cartHeader: {
+    minHeight: 50,
+    marginBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  bottomNavLabelActive: {
+    color: COLORS.orange,
   },
 });
