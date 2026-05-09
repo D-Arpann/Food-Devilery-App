@@ -25,6 +25,7 @@ import {
   fetchRestaurantFeed,
   logout,
   mapEsewaStatusToPaymentStatus,
+  submitRiderApplication,
   subscribeToCustomerOrders,
   subscribeToRestaurantFeed,
   updateCustomerSettings,
@@ -53,6 +54,7 @@ import {
   normalizeSavedAddresses,
   ORDER_STATUS,
   resolveDefaultSavedAddressId,
+  USER_ROLES,
 } from '@repo/utils';
 import { MapAddressPicker } from './MapAddressPicker';
 import { reverseGeocodeCoordinate } from './mapUtils';
@@ -741,6 +743,13 @@ function buildSessionCustomerSettings(session) {
     avatarUrl: metadata.avatar_url || '',
     email: metadata.email || user.email || '',
     role: metadata.role || 'customer',
+    verificationStatus: metadata.verification_status || 'verified',
+    vehicleDetails: metadata.vehicle_details || '',
+    bikeModel: metadata.bike_model || '',
+    bikeCondition: metadata.bike_condition || '',
+    licenseFrontUrl: metadata.license_front_url || '',
+    licenseBackUrl: metadata.license_back_url || '',
+    rejectionReason: '',
     addresses,
     defaultAddressId,
     defaultAddress,
@@ -898,6 +907,14 @@ export function DiscoveryScreen({
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
   const [profileError, setProfileError] = useState('');
+  const [riderForm, setRiderForm] = useState({
+    bikeModel: '',
+    bikeCondition: '',
+    licenseFrontFile: null,
+    licenseBackFile: null,
+  });
+  const [riderSubmitting, setRiderSubmitting] = useState(false);
+  const [riderApplicationSubmitted, setRiderApplicationSubmitted] = useState(false);
   const [addressDraft, setAddressDraft] = useState(createAddressDraft());
   const [editingAddressId, setEditingAddressId] = useState('');
   const [addressSaving, setAddressSaving] = useState(false);
@@ -1016,6 +1033,11 @@ export function DiscoveryScreen({
           phone: data.phone || '',
           avatarUrl: data.avatarUrl || '',
         });
+        setRiderForm((current) => ({
+          ...current,
+          bikeModel: data.bikeModel || '',
+          bikeCondition: data.bikeCondition || '',
+        }));
         setDeliveryAddress(data.defaultAddress || 'Naxal, Kathmandu');
         setDeliveryLocation(data.addresses.find((entry) => entry.id === data.defaultAddressId) || null);
         setDeliveryAddressMode(data.addresses?.length ? 'saved' : 'search');
@@ -1091,6 +1113,8 @@ export function DiscoveryScreen({
     (userMetadata.address && userMetadata.address !== 'Naxal, Kathmandu'),
   );
   const userName = profileSettings.username || profileSettings.fullName || session?.user?.phone || 'User';
+  const riderApplicationPending = riderApplicationSubmitted ||
+    (profileSettings.role === USER_ROLES.RIDER && profileSettings.verificationStatus === 'pending');
   const firstName = userName.split(' ')[0] || userName;
   const homeLocationText = getShortAddress(profileSettings.defaultAddress || deliveryAddress || initialAddress || 'Kathmandu');
   const mergedOrders = useMemo(
@@ -1457,6 +1481,123 @@ export function DiscoveryScreen({
     } finally {
       setProfileSaving(false);
     }
+  };
+
+  const handleRiderFieldChange = (field, value) => {
+    setRiderForm((current) => ({ ...current, [field]: value }));
+    setProfileError('');
+    setProfileMessage('');
+  };
+
+  const handlePickRiderLicense = async (side) => {
+    setProfileError('');
+    setProfileMessage('');
+
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        setProfileError('Allow photo access to upload your license.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.88,
+      });
+
+      if (result.canceled) {
+        return;
+      }
+
+      const asset = result.assets?.[0];
+      if (!asset?.uri) {
+        setProfileError('Choose a clear license photo.');
+        return;
+      }
+
+      const file = {
+        uri: asset.uri,
+        name: asset.fileName || `license-${side}-${session?.user?.id || 'rider'}.jpg`,
+        type: asset.mimeType || 'image/jpeg',
+      };
+
+      setRiderForm((current) => ({
+        ...current,
+        [side === 'front' ? 'licenseFrontFile' : 'licenseBackFile']: file,
+      }));
+    } catch (pickerError) {
+      setProfileError(pickerError.message || 'Could not open photos.');
+    }
+  };
+
+  const handleSubmitRiderApplication = async () => {
+    const bikeModel = String(riderForm.bikeModel || '').trim();
+    const bikeCondition = String(riderForm.bikeCondition || '').trim();
+
+    if (session?.isTemporaryAuth) {
+      setProfileError('Sign in with your phone before applying to ride.');
+      setProfileMessage('');
+      return;
+    }
+
+    if (!profileSettings.fullName || !isValidNepalPhoneNumber(profileSettings.phone)) {
+      setProfileError('Save your name and 10 digit mobile number before applying.');
+      setProfileMessage('');
+      return;
+    }
+
+    if (!bikeModel) {
+      setProfileError('Enter your bike model.');
+      setProfileMessage('');
+      return;
+    }
+
+    if (!bikeCondition) {
+      setProfileError('Enter your bike condition.');
+      setProfileMessage('');
+      return;
+    }
+
+    if (!riderForm.licenseFrontFile || !riderForm.licenseBackFile) {
+      setProfileError('Upload license front and back images.');
+      setProfileMessage('');
+      return;
+    }
+
+    setRiderSubmitting(true);
+    setProfileError('');
+    setProfileMessage('');
+
+    const { data: riderData, error: riderError } = await submitRiderApplication(supabase, {
+      riderName: profileSettings.fullName,
+      phone: profileSettings.phone,
+      bikeModel,
+      bikeCondition,
+      licenseFrontFile: riderForm.licenseFrontFile,
+      licenseBackFile: riderForm.licenseBackFile,
+    });
+
+    if (riderError) {
+      setProfileError(riderError.message || 'Could not submit rider application.');
+    } else {
+      setProfileSettings((current) => ({
+        ...current,
+        role: USER_ROLES.RIDER,
+        verificationStatus: 'pending',
+        vehicleDetails: riderData?.vehicle_details || current.vehicleDetails || '',
+        bikeModel: riderData?.bike_model || bikeModel,
+        bikeCondition: riderData?.bike_condition || bikeCondition,
+        licenseFrontUrl: riderData?.license_front_url || current.licenseFrontUrl || '',
+        licenseBackUrl: riderData?.license_back_url || current.licenseBackUrl || '',
+        rejectionReason: '',
+      }));
+      setRiderApplicationSubmitted(true);
+      setProfileMessage('Rider application submitted. Admin verification is required before jobs appear.');
+      await supabase.auth.refreshSession().catch(() => {});
+    }
+
+    setRiderSubmitting(false);
   };
 
   const handleSaveAddressDraft = async () => {
@@ -2927,6 +3068,89 @@ export function DiscoveryScreen({
                     {profileSaving ? 'Saving profile...' : 'Save profile'}
                   </Text>
                 </Pressable>
+              </View>
+
+              <View style={styles.profileSectionCard}>
+                <View style={styles.profileSectionHead}>
+                  <View>
+                    <Text style={styles.profileSectionTitle}>Ride with us</Text>
+                    <Text style={styles.profileSectionNote}>Apply using your saved profile details.</Text>
+                  </View>
+                  <View style={styles.profileCountChip}>
+                    <MaterialCommunityIcons name="motorbike" size={14} color={COLORS.orange} />
+                    <Text style={styles.profileCountChipText}>
+                      {riderApplicationPending ? 'Pending' : 'Apply'}
+                    </Text>
+                  </View>
+                </View>
+
+                {riderApplicationPending ? (
+                  <View style={styles.riderPendingBox}>
+                    <Ionicons name="time-outline" size={18} color={COLORS.orange} />
+                    <Text style={styles.riderPendingText}>
+                      Your rider application is waiting for admin verification.
+                    </Text>
+                  </View>
+                ) : (
+                  <>
+                    <View style={styles.profileField}>
+                      <Text style={styles.profileFieldLabel}>Bike model</Text>
+                      <TextInput
+                        value={riderForm.bikeModel}
+                        onChangeText={(value) => handleRiderFieldChange('bikeModel', value)}
+                        placeholder="Honda Dio"
+                        placeholderTextColor="#9C9691"
+                        style={styles.profileTextInput}
+                      />
+                    </View>
+
+                    <View style={styles.profileField}>
+                      <Text style={styles.profileFieldLabel}>Bike condition</Text>
+                      <TextInput
+                        value={riderForm.bikeCondition}
+                        onChangeText={(value) => handleRiderFieldChange('bikeCondition', value)}
+                        placeholder="Good, serviced recently"
+                        placeholderTextColor="#9C9691"
+                        style={[styles.profileTextInput, styles.riderConditionInput]}
+                        multiline
+                      />
+                    </View>
+
+                    <View style={styles.riderDocumentGrid}>
+                      <Pressable
+                        style={styles.riderDocumentButton}
+                        onPress={() => handlePickRiderLicense('front')}
+                      >
+                        <Ionicons name="image-outline" size={18} color={COLORS.orange} />
+                        <Text style={styles.riderDocumentTitle}>License front</Text>
+                        <Text style={styles.riderDocumentText} numberOfLines={1}>
+                          {riderForm.licenseFrontFile?.name || 'Upload photo'}
+                        </Text>
+                      </Pressable>
+
+                      <Pressable
+                        style={styles.riderDocumentButton}
+                        onPress={() => handlePickRiderLicense('back')}
+                      >
+                        <Ionicons name="image-outline" size={18} color={COLORS.orange} />
+                        <Text style={styles.riderDocumentTitle}>License back</Text>
+                        <Text style={styles.riderDocumentText} numberOfLines={1}>
+                          {riderForm.licenseBackFile?.name || 'Upload photo'}
+                        </Text>
+                      </Pressable>
+                    </View>
+
+                    <Pressable
+                      style={[styles.profileActionButton, riderSubmitting && styles.profileActionButtonDisabled]}
+                      onPress={handleSubmitRiderApplication}
+                      disabled={riderSubmitting}
+                    >
+                      <Text style={styles.profileActionButtonText}>
+                        {riderSubmitting ? 'Submitting application...' : 'Apply to ride'}
+                      </Text>
+                    </Pressable>
+                  </>
+                )}
               </View>
 
               <View style={styles.profileSectionCard}>
@@ -7110,6 +7334,55 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     fontFamily: 'Outfit_800ExtraBold',
     fontSize: 14,
+  },
+  riderPendingBox: {
+    minHeight: 54,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#FFD7C5',
+    backgroundColor: COLORS.soft,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+  },
+  riderPendingText: {
+    flex: 1,
+    color: COLORS.text,
+    fontFamily: 'Outfit_600SemiBold',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  riderConditionInput: {
+    minHeight: 72,
+    paddingTop: 12,
+    textAlignVertical: 'top',
+  },
+  riderDocumentGrid: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  riderDocumentButton: {
+    flex: 1,
+    minHeight: 92,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#FFD7C5',
+    backgroundColor: COLORS.soft,
+    padding: 11,
+    justifyContent: 'center',
+    gap: 5,
+  },
+  riderDocumentTitle: {
+    color: COLORS.ink,
+    fontFamily: 'Outfit_800ExtraBold',
+    fontSize: 13,
+  },
+  riderDocumentText: {
+    color: COLORS.muted,
+    fontFamily: 'Outfit_500Medium',
+    fontSize: 11,
   },
   profileSecondaryButton: {
     flex: 1,
