@@ -51,7 +51,7 @@ DROP TYPE IF EXISTS public.verification_status CASCADE;
 DROP TYPE IF EXISTS public.user_role CASCADE;
 
 CREATE TYPE public.user_role AS ENUM ('customer', 'restaurant_owner', 'rider', 'admin');
-CREATE TYPE public.verification_status AS ENUM ('pending', 'verified', 'suspended');
+CREATE TYPE public.verification_status AS ENUM ('pending', 'verified', 'suspended', 'rejected');
 CREATE TYPE public.order_status AS ENUM (
   'placed',
   'accepted',
@@ -75,6 +75,11 @@ CREATE TABLE public.user_profiles (
   verification_status public.verification_status NOT NULL DEFAULT 'verified',
   is_online BOOLEAN NOT NULL DEFAULT FALSE,
   vehicle_details TEXT,
+  bike_model TEXT,
+  bike_condition TEXT,
+  license_front_url TEXT,
+  license_back_url TEXT,
+  rejection_reason TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -98,6 +103,7 @@ CREATE TABLE public.restaurants (
     CHECK (jsonb_typeof(operating_hours) = 'array'),
   is_active BOOLEAN NOT NULL DEFAULT FALSE,
   verification_status public.verification_status NOT NULL DEFAULT 'pending',
+  rejection_reason TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (owner_id)
@@ -226,10 +232,28 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SET search_path = public
 AS $$
+DECLARE
+  is_rider_application BOOLEAN;
 BEGIN
   IF auth.uid() = NEW.id AND NOT public.current_user_is_admin() THEN
-    NEW.role = OLD.role;
-    NEW.verification_status = OLD.verification_status;
+    is_rider_application :=
+      OLD.role IN ('customer', 'rider')
+      AND OLD.verification_status IN ('verified', 'pending', 'rejected')
+      AND NEW.role = 'rider'
+      AND NEW.verification_status = 'pending'
+      AND COALESCE(NULLIF(NEW.bike_model, ''), '') <> ''
+      AND COALESCE(NULLIF(NEW.bike_condition, ''), '') <> ''
+      AND COALESCE(NULLIF(NEW.license_front_url, ''), '') <> ''
+      AND COALESCE(NULLIF(NEW.license_back_url, ''), '') <> '';
+
+    IF is_rider_application THEN
+      NEW.is_online = FALSE;
+      NEW.rejection_reason = NULL;
+    ELSE
+      NEW.role = OLD.role;
+      NEW.verification_status = OLD.verification_status;
+      NEW.rejection_reason = OLD.rejection_reason;
+    END IF;
   END IF;
 
   RETURN NEW;
@@ -243,7 +267,12 @@ SET search_path = public
 AS $$
 BEGIN
   IF auth.uid() = NEW.owner_id AND NOT public.current_user_is_admin() THEN
-    NEW.verification_status = OLD.verification_status;
+    IF OLD.verification_status = 'rejected' AND NEW.verification_status = 'pending' THEN
+      NEW.rejection_reason = NULL;
+    ELSE
+      NEW.verification_status = OLD.verification_status;
+      NEW.rejection_reason = OLD.rejection_reason;
+    END IF;
 
     IF OLD.verification_status <> 'verified' THEN
       NEW.is_active = FALSE;
@@ -409,7 +438,17 @@ ON public.user_profiles FOR INSERT
 WITH CHECK (
   auth.uid() = id
   AND role <> 'admin'
-  AND verification_status = 'verified'
+  AND (
+    verification_status = 'verified'
+    OR (
+      role = 'rider'
+      AND verification_status = 'pending'
+      AND COALESCE(NULLIF(bike_model, ''), '') <> ''
+      AND COALESCE(NULLIF(bike_condition, ''), '') <> ''
+      AND COALESCE(NULLIF(license_front_url, ''), '') <> ''
+      AND COALESCE(NULLIF(license_back_url, ''), '') <> ''
+    )
+  )
 );
 
 CREATE POLICY "Users update own profile"
@@ -659,19 +698,20 @@ WITH CHECK (public.current_user_is_admin());
 INSERT INTO storage.buckets (id, name, public)
 VALUES
   ('avatars', 'avatars', true),
-  ('restaurant_images', 'restaurant_images', true)
+  ('restaurant_images', 'restaurant_images', true),
+  ('rider_documents', 'rider_documents', true)
 ON CONFLICT (id) DO UPDATE
 SET public = EXCLUDED.public;
 
 CREATE POLICY "Public Read Access"
 ON storage.objects FOR SELECT
-USING (bucket_id IN ('avatars', 'restaurant_images'));
+USING (bucket_id IN ('avatars', 'restaurant_images', 'rider_documents'));
 
 CREATE POLICY "Owner Insert Access"
 ON storage.objects FOR INSERT
 WITH CHECK (
   auth.role() = 'authenticated'
-  AND bucket_id IN ('avatars', 'restaurant_images')
+  AND bucket_id IN ('avatars', 'restaurant_images', 'rider_documents')
   AND (storage.foldername(name))[1] = auth.uid()::text
 );
 
@@ -679,12 +719,12 @@ CREATE POLICY "Owner Update Access"
 ON storage.objects FOR UPDATE
 USING (
   auth.role() = 'authenticated'
-  AND bucket_id IN ('avatars', 'restaurant_images')
+  AND bucket_id IN ('avatars', 'restaurant_images', 'rider_documents')
   AND (storage.foldername(name))[1] = auth.uid()::text
 )
 WITH CHECK (
   auth.role() = 'authenticated'
-  AND bucket_id IN ('avatars', 'restaurant_images')
+  AND bucket_id IN ('avatars', 'restaurant_images', 'rider_documents')
   AND (storage.foldername(name))[1] = auth.uid()::text
 );
 
@@ -692,7 +732,7 @@ CREATE POLICY "Owner Delete Access"
 ON storage.objects FOR DELETE
 USING (
   auth.role() = 'authenticated'
-  AND bucket_id IN ('avatars', 'restaurant_images')
+  AND bucket_id IN ('avatars', 'restaurant_images', 'rider_documents')
   AND (storage.foldername(name))[1] = auth.uid()::text
 );
 
@@ -707,6 +747,11 @@ RETURNS TABLE (
   verification_status public.verification_status,
   is_online BOOLEAN,
   vehicle_details TEXT,
+  bike_model TEXT,
+  bike_condition TEXT,
+  license_front_url TEXT,
+  license_back_url TEXT,
+  rejection_reason TEXT,
   created_at TIMESTAMPTZ
 )
 LANGUAGE plpgsql
@@ -772,6 +817,11 @@ BEGIN
         verification_status,
         is_online,
         vehicle_details,
+        bike_model,
+        bike_condition,
+        license_front_url,
+        license_back_url,
+        rejection_reason,
         created_at,
         updated_at
       )
@@ -782,9 +832,14 @@ BEGIN
         current_phone,
         matched_profile.role,
         matched_profile.avatar_url,
-        'verified',
+        matched_profile.verification_status,
         matched_profile.is_online,
         matched_profile.vehicle_details,
+        matched_profile.bike_model,
+        matched_profile.bike_condition,
+        matched_profile.license_front_url,
+        matched_profile.license_back_url,
+        matched_profile.rejection_reason,
         matched_profile.created_at,
         NOW()
       )
@@ -817,7 +872,10 @@ BEGIN
 
   IF synced_profile.id IS NOT NULL THEN
     UPDATE public.user_profiles p
-    SET verification_status = 'verified',
+    SET verification_status = CASE
+          WHEN p.role = 'customer' AND p.verification_status = 'pending' THEN 'verified'::public.verification_status
+          ELSE p.verification_status
+        END,
         updated_at = NOW()
     WHERE p.id = synced_profile.id
     RETURNING * INTO synced_profile;
@@ -847,6 +905,11 @@ BEGIN
       synced_profile.verification_status,
       synced_profile.is_online,
       synced_profile.vehicle_details,
+      synced_profile.bike_model,
+      synced_profile.bike_condition,
+      synced_profile.license_front_url,
+      synced_profile.license_back_url,
+      synced_profile.rejection_reason,
       synced_profile.created_at;
   END IF;
 END;
@@ -863,6 +926,11 @@ RETURNS TABLE (
   verification_status public.verification_status,
   is_online BOOLEAN,
   vehicle_details TEXT,
+  bike_model TEXT,
+  bike_condition TEXT,
+  license_front_url TEXT,
+  license_back_url TEXT,
+  rejection_reason TEXT,
   created_at TIMESTAMPTZ
 )
 LANGUAGE SQL
@@ -913,12 +981,14 @@ BEGIN
 
   UPDATE public.restaurants r
   SET verification_status = 'verified',
-      is_active = TRUE
+      is_active = TRUE,
+      rejection_reason = NULL
   WHERE r.id = p_restaurant_id;
 
   UPDATE public.user_profiles p
   SET role = 'restaurant_owner',
-      verification_status = 'verified'
+      verification_status = 'verified',
+      rejection_reason = NULL
   WHERE p.id = target_owner_id;
 
   UPDATE auth.users u
@@ -976,7 +1046,8 @@ BEGIN
   UPDATE public.user_profiles p
   SET role = 'rider',
       verification_status = 'verified',
-      is_online = FALSE
+      is_online = FALSE,
+      rejection_reason = NULL
   WHERE p.id = p_profile_id
   RETURNING
     p.id,
