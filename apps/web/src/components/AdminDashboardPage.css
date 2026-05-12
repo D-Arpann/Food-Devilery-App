@@ -771,6 +771,12 @@
   line-height: 1.45;
 }
 
+.admin-dashboard-application-card .admin-dashboard-rejection-reason {
+  margin-top: 6px;
+  color: #be3b30;
+  font-weight: 700;
+}
+
 .admin-dashboard-card-actions,
 .admin-dashboard-row-actions,
 .admin-dashboard-user-meta {
@@ -808,6 +814,7 @@
 }
 
 .admin-dashboard-status[data-status="suspended"],
+.admin-dashboard-status[data-status="rejected"],
 .admin-dashboard-status[data-status="cancelled"] {
   background: #fff2f0;
   border-color: #f6c6c0;

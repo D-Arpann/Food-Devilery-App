@@ -4,6 +4,8 @@ import {
   fetchAdminDashboard,
   fetchContactSubmissions,
   markContactSubmissionRead,
+  rejectAdminRestaurantApplication,
+  rejectAdminRiderApplication,
   setAdminProfileStatus,
   verifyAdminRestaurantApplication,
   verifyAdminRiderApplication,
@@ -127,7 +129,7 @@ function StatusPill({ status }) {
   );
 }
 
-function ApplicationCard({ type, title, subtitle, meta, status, busy, onVerify }) {
+function ApplicationCard({ type, title, subtitle, meta, status, reason, busy, onVerify, onReject }) {
   return (
     <article className="admin-dashboard-application-card">
       <div>
@@ -135,11 +137,15 @@ function ApplicationCard({ type, title, subtitle, meta, status, busy, onVerify }
         <h3>{title}</h3>
         <p>{subtitle}</p>
         <small>{meta}</small>
+        {reason ? <small className="admin-dashboard-rejection-reason">Reason: {reason}</small> : null}
       </div>
       <div className="admin-dashboard-card-actions">
         <StatusPill status={status} />
         <button type="button" className="admin-dashboard-primary" onClick={onVerify} disabled={busy}>
           {busy ? 'Verifying...' : 'Verify'}
+        </button>
+        <button type="button" className="admin-dashboard-danger" onClick={onReject} disabled={busy}>
+          Reject
         </button>
       </div>
     </article>
@@ -357,6 +363,48 @@ export default function AdminDashboardPage({ session, supabase, onLogout }) {
     setBusyKey('');
   };
 
+  const handleRejectRestaurant = async (restaurant) => {
+    const reason = window.prompt(`Why is ${restaurant.name || 'this restaurant'} being rejected?`);
+    if (!reason || !reason.trim()) {
+      return;
+    }
+
+    setBusyKey(`restaurant-${restaurant.id}`);
+    setError('');
+    setMessage('');
+
+    const { error: rejectError } = await rejectAdminRestaurantApplication(supabase, restaurant.id, reason);
+    if (rejectError) {
+      setError(rejectError.message || 'Could not reject restaurant.');
+    } else {
+      setMessage(`${restaurant.name || 'Restaurant'} was rejected.`);
+      await loadDashboard({ silent: true });
+    }
+
+    setBusyKey('');
+  };
+
+  const handleRejectRider = async (profile) => {
+    const reason = window.prompt(`Why is ${profile.full_name || 'this rider'} being rejected?`);
+    if (!reason || !reason.trim()) {
+      return;
+    }
+
+    setBusyKey(`rider-${profile.id}`);
+    setError('');
+    setMessage('');
+
+    const { error: rejectError } = await rejectAdminRiderApplication(supabase, profile.id, reason);
+    if (rejectError) {
+      setError(rejectError.message || 'Could not reject rider.');
+    } else {
+      setMessage(`${profile.full_name || 'Rider'} was rejected.`);
+      await loadDashboard({ silent: true });
+    }
+
+    setBusyKey('');
+  };
+
   const handleStatusChange = async (profileId, status) => {
     setBusyKey(`status-${profileId}`);
     setError('');
@@ -553,8 +601,10 @@ export default function AdminDashboardPage({ session, supabase, onLogout }) {
                     subtitle={restaurant.address || 'No location saved'}
                     meta={`${restaurant.owner?.full_name || 'Owner'} · ${restaurant.contact_phone || restaurant.owner?.phone || 'No phone'}`}
                     status={restaurant.verification_status}
+                    reason={restaurant.rejection_reason}
                     busy={busyKey === `restaurant-${restaurant.id}`}
                     onVerify={() => handleVerifyRestaurant(restaurant)}
+                    onReject={() => handleRejectRestaurant(restaurant)}
                   />
                 ))}
                 {!pendingRestaurants.length ? <p className="admin-dashboard-note">Restaurant queue is clear.</p> : null}
@@ -575,8 +625,10 @@ export default function AdminDashboardPage({ session, supabase, onLogout }) {
                     subtitle={profile.phone || profile.email || 'No contact saved'}
                     meta={profile.vehicle_details || `Applied ${formatDate(profile.created_at)}`}
                     status={profile.verification_status}
+                    reason={profile.rejection_reason}
                     busy={busyKey === `rider-${profile.id}`}
                     onVerify={() => handleVerifyRider(profile)}
+                    onReject={() => handleRejectRider(profile)}
                   />
                 ))}
                 {!pendingRiders.length ? <p className="admin-dashboard-note">Rider queue is clear.</p> : null}
