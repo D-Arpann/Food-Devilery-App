@@ -30,6 +30,7 @@ export default function App() {
   const [roleLoading, setRoleLoading] = useState(false);
   const [screen, setScreen] = useState(SCREEN.LANDING);
   const [loginReturnScreen, setLoginReturnScreen] = useState(SCREEN.LANDING);
+  const [accessMessage, setAccessMessage] = useState('');
   const roleResolvedRef = useRef(false);
 
   useEffect(() => {
@@ -67,9 +68,22 @@ export default function App() {
       return undefined;
     }
 
-    if (screen === SCREEN.LOGIN || screen === SCREEN.RESTAURANT_SIGNUP) {
+    if (screen === SCREEN.LOGIN) {
       setRoleLoading(false);
       return undefined;
+    }
+
+    if (screen === SCREEN.RESTAURANT_SIGNUP) {
+      const trustedRole = session.user?.app_metadata?.role || session.user?.user_metadata?.role || '';
+      const trustedVerificationStatus =
+        session.user?.app_metadata?.verification_status ||
+        session.user?.user_metadata?.verification_status ||
+        '';
+
+      if (!(trustedRole === USER_ROLES.RIDER && trustedVerificationStatus === 'verified')) {
+        setRoleLoading(false);
+        return undefined;
+      }
     }
 
     let active = true;
@@ -78,6 +92,10 @@ export default function App() {
     async function resolveAccountRole() {
       try {
         const trustedRole = session.user?.app_metadata?.role || session.user?.user_metadata?.role || '';
+        const trustedVerificationStatus =
+          session.user?.app_metadata?.verification_status ||
+          session.user?.user_metadata?.verification_status ||
+          '';
         const hasTrustedRole = Object.values(USER_ROLES).includes(trustedRole);
 
         if (session.isTemporaryAuth) {
@@ -89,7 +107,7 @@ export default function App() {
 
         const { data: profile, error } = await supabase
           .from(TABLES.USER_PROFILES)
-          .select('role')
+          .select('role, verification_status')
           .eq('id', session.user.id)
           .maybeSingle();
 
@@ -104,6 +122,17 @@ export default function App() {
         }
 
         if (!profile) {
+          if (trustedRole === USER_ROLES.RIDER && trustedVerificationStatus === 'verified') {
+            await logout(supabase);
+            if (active) {
+              setSession(null);
+              setAccountRole(null);
+              setAccessMessage('Rider accounts should use the mobile app.');
+              setScreen(SCREEN.LOGIN);
+            }
+            return;
+          }
+
           if (hasTrustedRole) {
             setAccountRole(trustedRole);
             return;
@@ -119,6 +148,18 @@ export default function App() {
         }
 
         const resolvedRole = profile?.role || (hasTrustedRole ? trustedRole : USER_ROLES.CUSTOMER);
+        const resolvedVerificationStatus = profile?.verification_status || trustedVerificationStatus || 'verified';
+
+        if (resolvedRole === USER_ROLES.RIDER && resolvedVerificationStatus === 'verified') {
+          await logout(supabase);
+          if (active) {
+            setSession(null);
+            setAccountRole(null);
+            setAccessMessage('Rider accounts should use the mobile app.');
+            setScreen(SCREEN.LOGIN);
+          }
+          return;
+        }
 
         if (resolvedRole === USER_ROLES.RESTAURANT_OWNER) {
           setScreen(SCREEN.LANDING);
@@ -184,6 +225,7 @@ export default function App() {
 
   const handleOpenLogin = (returnScreen = screen) => {
     setLoginReturnScreen(returnScreen);
+    setAccessMessage('');
     setScreen(SCREEN.LOGIN);
   };
 
@@ -217,9 +259,11 @@ export default function App() {
         ) : screen === SCREEN.LOGIN ? (
           <LoginPage
             supabase={supabase}
+            notice={accessMessage}
             onBack={handleOpenLanding}
             onOpenRestaurantSignup={handleOpenRestaurantSignup}
             onAuthenticated={(nextSession) => {
+              setAccessMessage('');
               setSession(nextSession);
               setScreen(loginReturnScreen || SCREEN.LANDING);
               setLoginReturnScreen(SCREEN.LANDING);
