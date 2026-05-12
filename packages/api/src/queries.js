@@ -16,19 +16,19 @@ const RESTAURANT_ORDER_SELECT =
   'id, customer_id, restaurant_id, rider_id, subtotal, delivery_fee, total_amount, status, delivery_address, delivery_place_id, delivery_lat, delivery_lng, rider_lat, rider_lng, rider_heading, rider_speed_mps, rider_accuracy_m, rider_location_updated_at, estimated_arrival_minutes, payment_status, created_at, updated_at';
 const RIDER_ORDER_SELECT = '*';
 const RIDER_PROFILE_SELECT =
-  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_details, created_at';
+  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason, created_at';
 const ADMIN_PROFILE_SELECT =
-  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_details, created_at';
+  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason, created_at';
 const ADMIN_RESTAURANT_SELECT =
-  'id, owner_id, name, description, image_url, banner_url, profile_image_url, address, formatted_address, google_place_id, latitude, longitude, contact_phone, contact_email, is_active, verification_status, created_at';
+  'id, owner_id, name, description, image_url, banner_url, profile_image_url, address, formatted_address, google_place_id, latitude, longitude, contact_phone, contact_email, is_active, verification_status, rejection_reason, created_at';
 const ADMIN_ORDER_SELECT =
   'id, customer_id, restaurant_id, rider_id, total_amount, status, payment_status, created_at, updated_at';
 const CUSTOMER_ORDER_SELECT =
   'id, customer_id, restaurant_id, rider_id, subtotal, delivery_fee, total_amount, status, delivery_address, delivery_place_id, delivery_lat, delivery_lng, rider_lat, rider_lng, rider_heading, rider_speed_mps, rider_accuracy_m, rider_location_updated_at, estimated_arrival_minutes, payment_status, payment_method, payment_provider, payment_reference, payment_intent_id, payment_amount, payment_currency, payment_metadata, paid_at, created_at, updated_at';
 const OWNED_RESTAURANT_SELECT =
-  'id, owner_id, name, description, image_url, banner_url, profile_image_url, address, formatted_address, google_place_id, latitude, longitude, contact_phone, contact_email, is_active, verification_status, created_at';
+  'id, owner_id, name, description, image_url, banner_url, profile_image_url, address, formatted_address, google_place_id, latitude, longitude, contact_phone, contact_email, is_active, verification_status, rejection_reason, created_at';
 const RESTAURANT_APPLICATION_SELECT =
-  'id, name, description, image_url, banner_url, profile_image_url, address, formatted_address, google_place_id, latitude, longitude, contact_phone, contact_email, verification_status';
+  'id, name, description, image_url, banner_url, profile_image_url, address, formatted_address, google_place_id, latitude, longitude, contact_phone, contact_email, verification_status, rejection_reason';
 const DEFAULT_OPERATING_HOURS = [
   { day: 'Mon', open: '10:00', close: '21:00', closed: false },
   { day: 'Tue', open: '10:00', close: '21:00', closed: false },
@@ -99,6 +99,10 @@ function isMissingDatabaseFunction(error) {
 
 function normalizeVerificationStatus(value = '') {
   return String(value || 'pending').trim().toLowerCase() || 'pending';
+}
+
+function normalizeRejectionReason(value = '') {
+  return String(value || '').trim();
 }
 
 function mergeOwnersIntoRestaurants(restaurants = [], profiles = []) {
@@ -214,6 +218,11 @@ async function resolveRiderId(client, riderId) {
 }
 
 function normalizeRiderApplicationPayload(payload = {}) {
+  const bikeModel = String(payload.bikeModel || payload.bike_model || '').trim();
+  const bikeCondition = String(payload.bikeCondition || payload.bike_condition || '').trim();
+  const licenseFrontUrl = String(payload.licenseFrontUrl || payload.license_front_url || '').trim();
+  const licenseBackUrl = String(payload.licenseBackUrl || payload.license_back_url || '').trim();
+
   return {
     riderName: String(
       payload.riderName ||
@@ -231,8 +240,27 @@ function normalizeRiderApplicationPayload(payload = {}) {
       payload.contact_phone ||
       '',
     ).trim(),
+    bikeModel,
+    bikeCondition,
+    licenseFrontUrl,
+    licenseBackUrl,
+    licenseFrontFile: payload.licenseFrontFile || payload.license_front_file || null,
+    licenseBackFile: payload.licenseBackFile || payload.license_back_file || null,
     vehicleDetails: String(payload.vehicleDetails || payload.vehicle_details || '').trim(),
   };
+}
+
+function buildRiderVehicleDetails({ bikeModel, bikeCondition, vehicleDetails }) {
+  const providedDetails = String(vehicleDetails || '').trim();
+  if (providedDetails) {
+    return providedDetails;
+  }
+
+  return [
+    bikeModel ? `Bike model: ${bikeModel}` : '',
+    bikeCondition ? `Condition: ${bikeCondition}` : '',
+    'License front and back uploaded.',
+  ].filter(Boolean).join(' ');
 }
 
 function normalizeRiderJobsOptions(options = {}) {
@@ -529,6 +557,7 @@ export async function verifyAdminRestaurantApplication(client, restaurantId) {
       .update({
         verification_status: 'verified',
         is_active: true,
+        rejection_reason: null,
       })
       .eq('id', restaurantId)
       .select(ADMIN_RESTAURANT_SELECT)
@@ -545,6 +574,7 @@ export async function verifyAdminRestaurantApplication(client, restaurantId) {
         .update({
           role: USER_ROLES.RESTAURANT_OWNER,
           verification_status: 'verified',
+          rejection_reason: null,
         })
         .eq('id', restaurant.owner_id)
         .select(ADMIN_PROFILE_SELECT)
@@ -566,6 +596,40 @@ export async function verifyAdminRestaurantApplication(client, restaurantId) {
     };
   } catch (error) {
     console.error('Error verifying restaurant application:', error);
+    return { data: null, error };
+  }
+}
+
+export async function rejectAdminRestaurantApplication(client, restaurantId, reason = '') {
+  const rejectionReason = normalizeRejectionReason(reason);
+
+  try {
+    if (!restaurantId) {
+      throw new Error('Missing restaurant application id.');
+    }
+
+    if (!rejectionReason) {
+      throw new Error('Enter a rejection reason.');
+    }
+
+    const { data, error } = await client
+      .from(TABLES.RESTAURANTS)
+      .update({
+        verification_status: 'rejected',
+        is_active: false,
+        rejection_reason: rejectionReason,
+      })
+      .eq('id', restaurantId)
+      .select(ADMIN_RESTAURANT_SELECT)
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return { data: withRestaurantLocationDefaults(data), error: null };
+  } catch (error) {
+    console.error('Error rejecting restaurant application:', error);
     return { data: null, error };
   }
 }
@@ -595,6 +659,7 @@ export async function verifyAdminRiderApplication(client, profileId) {
         role: USER_ROLES.RIDER,
         verification_status: 'verified',
         is_online: false,
+        rejection_reason: null,
       })
       .eq('id', profileId)
       .select(ADMIN_PROFILE_SELECT)
@@ -607,6 +672,41 @@ export async function verifyAdminRiderApplication(client, profileId) {
     return { data, error: null };
   } catch (error) {
     console.error('Error verifying rider application:', error);
+    return { data: null, error };
+  }
+}
+
+export async function rejectAdminRiderApplication(client, profileId, reason = '') {
+  const rejectionReason = normalizeRejectionReason(reason);
+
+  try {
+    if (!profileId) {
+      throw new Error('Missing rider profile id.');
+    }
+
+    if (!rejectionReason) {
+      throw new Error('Enter a rejection reason.');
+    }
+
+    const { data, error } = await client
+      .from(TABLES.USER_PROFILES)
+      .update({
+        role: USER_ROLES.RIDER,
+        verification_status: 'rejected',
+        is_online: false,
+        rejection_reason: rejectionReason,
+      })
+      .eq('id', profileId)
+      .select(ADMIN_PROFILE_SELECT)
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return { data, error: null };
+  } catch (error) {
+    console.error('Error rejecting rider application:', error);
     return { data: null, error };
   }
 }
@@ -1286,7 +1386,17 @@ export async function updateRestaurantOrderStatus(client, orderId, newStatus) {
 }
 
 export async function submitRiderApplication(client, payload = {}) {
-  const { riderName, phone, vehicleDetails } = normalizeRiderApplicationPayload(payload);
+  const {
+    riderName,
+    phone,
+    bikeModel,
+    bikeCondition,
+    licenseFrontUrl,
+    licenseBackUrl,
+    licenseFrontFile,
+    licenseBackFile,
+    vehicleDetails,
+  } = normalizeRiderApplicationPayload(payload);
   const normalizedPhone = isValidNepalPhoneNumber(phone) ? toNepalE164Phone(phone) : phone;
 
   try {
@@ -1299,6 +1409,26 @@ export async function submitRiderApplication(client, payload = {}) {
     }
 
     const user = await getAuthenticatedUser(client);
+
+    if (!bikeModel) {
+      throw new Error('Enter your bike model.');
+    }
+
+    if (!bikeCondition) {
+      throw new Error('Enter your bike condition.');
+    }
+
+    const uploadedFront = licenseFrontUrl || (licenseFrontFile
+      ? (await uploadRiderDocument(client, user.id, licenseFrontFile, 'front')).data?.url
+      : '');
+    const uploadedBack = licenseBackUrl || (licenseBackFile
+      ? (await uploadRiderDocument(client, user.id, licenseBackFile, 'back')).data?.url
+      : '');
+
+    if (!uploadedFront || !uploadedBack) {
+      throw new Error('Upload license front and back images.');
+    }
+
     const { data: existingProfile, error: existingProfileError } = await client
       .from(TABLES.USER_PROFILES)
       .select(RIDER_PROFILE_SELECT)
@@ -1316,11 +1446,18 @@ export async function submitRiderApplication(client, payload = {}) {
       role: USER_ROLES.RIDER,
       verification_status: 'pending',
       is_online: false,
+      bike_model: bikeModel,
+      bike_condition: bikeCondition,
+      license_front_url: uploadedFront,
+      license_back_url: uploadedBack,
+      rejection_reason: null,
     };
 
-    if (vehicleDetails) {
-      nextMetadata.vehicle_details = vehicleDetails;
-    }
+    nextMetadata.vehicle_details = buildRiderVehicleDetails({
+      bikeModel,
+      bikeCondition,
+      vehicleDetails,
+    });
 
     const { error: metadataError } = await client.auth.updateUser({ data: nextMetadata });
     if (metadataError) {
@@ -1339,7 +1476,12 @@ export async function submitRiderApplication(client, payload = {}) {
       role: USER_ROLES.RIDER,
       verification_status: 'pending',
       is_online: false,
-      vehicle_details: vehicleDetails || existingProfile?.vehicle_details || null,
+      vehicle_details: nextMetadata.vehicle_details || existingProfile?.vehicle_details || null,
+      bike_model: bikeModel,
+      bike_condition: bikeCondition,
+      license_front_url: uploadedFront,
+      license_back_url: uploadedBack,
+      rejection_reason: null,
     };
 
     const { data, error } = await client
@@ -1846,6 +1988,7 @@ export async function submitRestaurantApplication(client, payload = {}) {
       contact_email: contactEmail,
       is_active: false,
       verification_status: 'pending',
+      rejection_reason: null,
     };
 
     if (existingApplication?.id) {
@@ -2401,6 +2544,54 @@ export async function uploadAvatar(client, userId, file) {
     return { data: { url: publicUrl }, error: null };
   } catch (error) {
     console.error('Error uploading avatar:', error);
+    return { data: null, error };
+  }
+}
+
+export async function uploadRiderDocument(client, userId, file, side = 'front') {
+  try {
+    if (!userId) {
+      throw new Error('Missing user id for rider document upload.');
+    }
+
+    if (!file) {
+      throw new Error('No file provided.');
+    }
+
+    const normalizedSide = side === 'back' ? 'back' : 'front';
+    const uploadBody = file.uri && typeof fetch === 'function'
+      ? await fetch(file.uri).then((response) => response.blob())
+      : file;
+    const extension = file.name?.split('.').pop() || file.fileName?.split('.').pop() || 'jpg';
+    const filePath = `${userId}/license-${normalizedSide}.${extension}`;
+
+    const { error: uploadError } = await client.storage
+      .from('rider_documents')
+      .upload(filePath, uploadBody, { upsert: true, contentType: file.type || file.mimeType || 'image/jpeg' });
+
+    if (uploadError) {
+      throw uploadError;
+    }
+
+    const { data: urlData } = client.storage
+      .from('rider_documents')
+      .getPublicUrl(filePath);
+
+    const publicUrl = urlData?.publicUrl || '';
+    const updatePayload = normalizedSide === 'front'
+      ? { license_front_url: publicUrl }
+      : { license_back_url: publicUrl };
+
+    if (publicUrl) {
+      await client
+        .from(TABLES.USER_PROFILES)
+        .update(updatePayload)
+        .eq('id', userId);
+    }
+
+    return { data: { url: publicUrl, side: normalizedSide }, error: null };
+  } catch (error) {
+    console.error('Error uploading rider document:', error);
     return { data: null, error };
   }
 }

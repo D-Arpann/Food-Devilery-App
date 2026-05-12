@@ -55,7 +55,9 @@ export {
   submitRestaurantApplication,
   updateRestaurantProfile,
   verifyAdminRestaurantApplication,
+  rejectAdminRestaurantApplication,
   verifyAdminRiderApplication,
+  rejectAdminRiderApplication,
   setAdminProfileStatus,
   deleteAdminProfile,
   createOrder,
@@ -66,5 +68,6 @@ export {
   fetchContactSubmissions,
   markContactSubmissionRead,
   uploadAvatar,
+  uploadRiderDocument,
   uploadRestaurantImage,
 } from './queries.js'

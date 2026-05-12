@@ -479,6 +479,14 @@ function buildCustomerSettingsRecord({ profile, user }) {
     phone,
     role,
     avatarUrl,
+    verificationStatus: profile?.verification_status || metadata.verification_status || 'verified',
+    isOnline: Boolean(profile?.is_online),
+    vehicleDetails: profile?.vehicle_details || metadata.vehicle_details || '',
+    bikeModel: profile?.bike_model || metadata.bike_model || '',
+    bikeCondition: profile?.bike_condition || metadata.bike_condition || '',
+    licenseFrontUrl: profile?.license_front_url || metadata.license_front_url || '',
+    licenseBackUrl: profile?.license_back_url || metadata.license_back_url || '',
+    rejectionReason: profile?.rejection_reason || '',
     addresses,
     defaultAddressId,
     defaultAddress,
@@ -501,7 +509,7 @@ export async function fetchCustomerSettings(client, userId) {
 
     const { data: profile, error: profileError } = await client
       .from(TABLES.USER_PROFILES)
-      .select('id, full_name, email, phone, role, avatar_url')
+      .select('id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason')
       .eq('id', targetUserId)
       .maybeSingle();
 
