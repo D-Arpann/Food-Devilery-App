@@ -27,6 +27,12 @@ const SEEDED_LOGIN_PHONE_DIGITS = new Set([
   '9800000100',
   '9800000200',
 ]);
+const CUSTOMER_SETTINGS_SELECT =
+  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_type, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason';
+const CUSTOMER_SETTINGS_LEGACY_RIDER_SELECT =
+  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason';
+const CUSTOMER_SETTINGS_BASE_SELECT =
+  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_details, rejection_reason';
 
 function isSeededLoginPhone(phone) {
   const phoneDigits = onlyDigits(phone).slice(-10);
@@ -105,6 +111,43 @@ function isMissingRpcError(error) {
     message.includes('function public.sync_login_profile') ||
     message.includes('function sync_login_profile')
   );
+}
+
+function isMissingProfileColumnError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    error?.code === '42703' ||
+    (message.includes('column') && message.includes('does not exist'))
+  );
+}
+
+async function fetchProfileSettingsRecord(client, userId) {
+  const runQuery = (columns) => client
+    .from(TABLES.USER_PROFILES)
+    .select(columns)
+    .eq('id', userId)
+    .maybeSingle();
+
+  const currentResult = await runQuery(CUSTOMER_SETTINGS_SELECT);
+  if (!currentResult.error || !isMissingProfileColumnError(currentResult.error)) {
+    return currentResult;
+  }
+
+  const missingMessage = String(currentResult.error?.message || '').toLowerCase();
+  const fallbackSelect = missingMessage.includes('vehicle_type')
+    ? CUSTOMER_SETTINGS_LEGACY_RIDER_SELECT
+    : CUSTOMER_SETTINGS_BASE_SELECT;
+  const fallbackResult = await runQuery(fallbackSelect);
+
+  if (
+    fallbackResult.error &&
+    fallbackSelect !== CUSTOMER_SETTINGS_BASE_SELECT &&
+    isMissingProfileColumnError(fallbackResult.error)
+  ) {
+    return runQuery(CUSTOMER_SETTINGS_BASE_SELECT);
+  }
+
+  return fallbackResult;
 }
 
 function normalizeRpcProfile(data) {
@@ -481,6 +524,7 @@ function buildCustomerSettingsRecord({ profile, user }) {
     avatarUrl,
     verificationStatus: profile?.verification_status || metadata.verification_status || 'verified',
     isOnline: Boolean(profile?.is_online),
+    vehicleType: profile?.vehicle_type || metadata.vehicle_type || '',
     vehicleDetails: profile?.vehicle_details || metadata.vehicle_details || '',
     bikeModel: profile?.bike_model || metadata.bike_model || '',
     bikeCondition: profile?.bike_condition || metadata.bike_condition || '',
@@ -507,11 +551,7 @@ export async function fetchCustomerSettings(client, userId) {
       throw new Error('Missing customer id for profile settings.');
     }
 
-    const { data: profile, error: profileError } = await client
-      .from(TABLES.USER_PROFILES)
-      .select('id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason')
-      .eq('id', targetUserId)
-      .maybeSingle();
+    const { data: profile, error: profileError } = await fetchProfileSettingsRecord(client, targetUserId);
 
     if (profileError) {
       throw profileError;

@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { AUTH_OTP_LENGTH } from '@repo/utils';
-import { verifyOtpAndSyncProfile } from './auth.js';
+import { fetchCustomerSettings, verifyOtpAndSyncProfile } from './auth.js';
 
 class ProfileQuery {
   constructor(store) {
@@ -190,6 +190,77 @@ describe('phone OTP profile sync', () => {
 describe('OTP configuration', () => {
   it('uses six digit OTP codes app wide', () => {
     assert.equal(AUTH_OTP_LENGTH, 6);
+  });
+});
+
+describe('customer settings', () => {
+  it('falls back to base profile columns when rider application columns are not migrated yet', async () => {
+    const selects = [];
+    const user = {
+      id: 'customer-id',
+      phone: '+9779800000100',
+      email: 'customer@example.com',
+      user_metadata: {
+        full_name: 'Demo Customer',
+        address: 'Naxal, Kathmandu',
+      },
+    };
+
+    const profile = {
+      id: 'customer-id',
+      full_name: 'Demo Customer',
+      email: 'customer@example.com',
+      phone: '+9779800000100',
+      role: 'customer',
+      avatar_url: null,
+      verification_status: 'verified',
+      is_online: false,
+      vehicle_details: null,
+      rejection_reason: null,
+    };
+
+    const client = {
+      auth: {
+        async getUser() {
+          return { data: { user }, error: null };
+        },
+      },
+      from() {
+        return {
+          select(columns) {
+            selects.push(columns);
+            this.columns = columns;
+            return this;
+          },
+          eq() {
+            return this;
+          },
+          async maybeSingle() {
+            if (this.columns.includes('bike_model')) {
+              return {
+                data: null,
+                error: {
+                  code: '42703',
+                  message: 'column user_profiles.bike_model does not exist',
+                },
+              };
+            }
+
+            return { data: profile, error: null };
+          },
+        };
+      },
+    };
+
+    const { data, error } = await fetchCustomerSettings(client, 'customer-id');
+
+    assert.equal(error, null);
+    assert.equal(data.fullName, 'Demo Customer');
+    assert.equal(data.role, 'customer');
+    assert.equal(data.bikeModel, '');
+    assert.equal(selects.length, 2);
+    assert.match(selects[0], /bike_model/);
+    assert.doesNotMatch(selects[1], /bike_model/);
   });
 });
 
