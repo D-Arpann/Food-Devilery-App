@@ -16,7 +16,7 @@ import { useFonts } from 'expo-font';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { createAppClient, fetchCustomerSettings } from '@repo/api';
-import { CartProvider, Input, usePhoneAuthFlow } from '@repo/ui';
+import { CartProvider, Input, Logo, usePhoneAuthFlow } from '@repo/ui';
 import {
   AUTH_COPY,
   AUTH_THEME,
@@ -34,7 +34,7 @@ const supabase = createAppClient({
   supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL || SUPABASE_DEFAULTS.URL,
   supabaseKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || SUPABASE_DEFAULTS.ANON_KEY,
 });
-const BRAND_LOGO = require('./assets/splash-icon.png');
+const BRAND_LOGO = Logo;
 const DESIGN_WIDTH = 402;
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const SCALE = Math.min(SCREEN_WIDTH / DESIGN_WIDTH, 1);
@@ -69,10 +69,10 @@ function ActionButton({
     <Pressable
       onPress={onPress}
       disabled={isDisabled}
-      style={({ pressed }) => [
+      android_ripple={{ color: variant === 'outline' ? 'rgba(30, 30, 30, 0.08)' : 'rgba(255, 255, 255, 0.22)' }}
+      style={[
         styles.actionButtonBase,
         variant === 'outline' ? styles.actionButtonOutline : styles.actionButtonFilled,
-        pressed && !isDisabled && styles.actionButtonPressed,
         isDisabled && styles.actionButtonDisabled,
         style,
       ]}
