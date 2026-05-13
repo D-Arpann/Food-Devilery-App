@@ -20,6 +20,7 @@ RETURNS TABLE (
   avatar_url TEXT,
   verification_status public.verification_status,
   is_online BOOLEAN,
+  vehicle_type TEXT,
   vehicle_details TEXT,
   bike_model TEXT,
   bike_condition TEXT,
@@ -90,6 +91,7 @@ BEGIN
         avatar_url,
         verification_status,
         is_online,
+        vehicle_type,
         vehicle_details,
         bike_model,
         bike_condition,
@@ -108,6 +110,7 @@ BEGIN
         matched_profile.avatar_url,
         matched_profile.verification_status,
         matched_profile.is_online,
+        matched_profile.vehicle_type,
         matched_profile.vehicle_details,
         matched_profile.bike_model,
         matched_profile.bike_condition,
@@ -164,7 +167,13 @@ BEGIN
       || jsonb_build_object(
         'full_name', synced_profile.full_name,
         'phone', synced_profile.phone,
-        'email', synced_profile.email
+        'email', synced_profile.email,
+        'vehicle_type', synced_profile.vehicle_type,
+        'vehicle_details', synced_profile.vehicle_details,
+        'bike_model', synced_profile.bike_model,
+        'bike_condition', synced_profile.bike_condition,
+        'license_front_url', synced_profile.license_front_url,
+        'license_back_url', synced_profile.license_back_url
       )
     WHERE u.id = current_user_id;
 
@@ -178,6 +187,7 @@ BEGIN
       synced_profile.avatar_url,
       synced_profile.verification_status,
       synced_profile.is_online,
+      synced_profile.vehicle_type,
       synced_profile.vehicle_details,
       synced_profile.bike_model,
       synced_profile.bike_condition,
@@ -199,6 +209,7 @@ RETURNS TABLE (
   avatar_url TEXT,
   verification_status public.verification_status,
   is_online BOOLEAN,
+  vehicle_type TEXT,
   vehicle_details TEXT,
   bike_model TEXT,
   bike_condition TEXT,
@@ -376,7 +387,7 @@ VALUES
     '+9779800000200',
     NOW(),
     '{"provider":"phone","providers":["phone"],"role":"rider","verification_status":"verified"}'::jsonb,
-    '{"full_name":"Demo Rider","phone":"+9779800000200","email":"demo.rider@chitomitho.local"}'::jsonb,
+    '{"full_name":"Demo Rider","phone":"+9779800000200","email":"demo.rider@chitomitho.local","vehicle_type":"motorbike"}'::jsonb,
     NOW(),
     NOW(),
     '',
@@ -440,6 +451,7 @@ INSERT INTO public.user_profiles (
   avatar_url,
   verification_status,
   is_online,
+  vehicle_type,
   vehicle_details
 )
 VALUES
@@ -452,6 +464,7 @@ VALUES
     NULL,
     'verified',
     FALSE,
+    NULL,
     NULL
   ),
   (
@@ -463,6 +476,7 @@ VALUES
     NULL,
     'verified',
     TRUE,
+    NULL,
     NULL
   ),
   (
@@ -474,6 +488,7 @@ VALUES
     NULL,
     'verified',
     TRUE,
+    NULL,
     NULL
   ),
   (
@@ -485,6 +500,7 @@ VALUES
     NULL,
     'verified',
     TRUE,
+    NULL,
     NULL
   ),
   (
@@ -496,6 +512,7 @@ VALUES
     NULL,
     'verified',
     FALSE,
+    NULL,
     NULL
   ),
   (
@@ -507,7 +524,8 @@ VALUES
     NULL,
     'verified',
     TRUE,
-    'Bike - BA 99 PA 1234'
+    'motorbike',
+    'Vehicle: Motorbike. Model: Bike - BA 99 PA 1234'
   )
 ON CONFLICT (id) DO UPDATE
 SET
@@ -518,6 +536,7 @@ SET
   avatar_url = EXCLUDED.avatar_url,
   verification_status = EXCLUDED.verification_status,
   is_online = EXCLUDED.is_online,
+  vehicle_type = EXCLUDED.vehicle_type,
   vehicle_details = EXCLUDED.vehicle_details;
 
 INSERT INTO public.restaurants (
@@ -892,6 +911,7 @@ INSERT INTO public.user_profiles (
   avatar_url,
   verification_status,
   is_online,
+  vehicle_type,
   vehicle_details
 )
 SELECT
@@ -903,6 +923,7 @@ SELECT
   rr.profile_image_url,
   'verified',
   TRUE,
+  NULL,
   NULL
 FROM real_restaurants rr
 ON CONFLICT (id) DO UPDATE
@@ -914,6 +935,7 @@ SET
   avatar_url = EXCLUDED.avatar_url,
   verification_status = EXCLUDED.verification_status,
   is_online = EXCLUDED.is_online,
+  vehicle_type = EXCLUDED.vehicle_type,
   vehicle_details = EXCLUDED.vehicle_details;
 
 WITH real_restaurants (

@@ -74,6 +74,7 @@ CREATE TABLE public.user_profiles (
   avatar_url TEXT,
   verification_status public.verification_status NOT NULL DEFAULT 'verified',
   is_online BOOLEAN NOT NULL DEFAULT FALSE,
+  vehicle_type TEXT CHECK (vehicle_type IS NULL OR vehicle_type IN ('bicycle', 'motorbike', 'scooter')),
   vehicle_details TEXT,
   bike_model TEXT,
   bike_condition TEXT,
@@ -241,10 +242,16 @@ BEGIN
       AND OLD.verification_status IN ('verified', 'pending', 'rejected')
       AND NEW.role = 'rider'
       AND NEW.verification_status = 'pending'
-      AND COALESCE(NULLIF(NEW.bike_model, ''), '') <> ''
-      AND COALESCE(NULLIF(NEW.bike_condition, ''), '') <> ''
-      AND COALESCE(NULLIF(NEW.license_front_url, ''), '') <> ''
-      AND COALESCE(NULLIF(NEW.license_back_url, ''), '') <> '';
+      AND NEW.vehicle_type IN ('bicycle', 'motorbike', 'scooter')
+      AND (
+        NEW.vehicle_type = 'bicycle'
+        OR (
+          COALESCE(NULLIF(NEW.bike_model, ''), '') <> ''
+          AND COALESCE(NULLIF(NEW.bike_condition, ''), '') <> ''
+          AND COALESCE(NULLIF(NEW.license_front_url, ''), '') <> ''
+          AND COALESCE(NULLIF(NEW.license_back_url, ''), '') <> ''
+        )
+      );
 
     IF is_rider_application THEN
       NEW.is_online = FALSE;
@@ -443,10 +450,16 @@ WITH CHECK (
     OR (
       role = 'rider'
       AND verification_status = 'pending'
-      AND COALESCE(NULLIF(bike_model, ''), '') <> ''
-      AND COALESCE(NULLIF(bike_condition, ''), '') <> ''
-      AND COALESCE(NULLIF(license_front_url, ''), '') <> ''
-      AND COALESCE(NULLIF(license_back_url, ''), '') <> ''
+      AND vehicle_type IN ('bicycle', 'motorbike', 'scooter')
+      AND (
+        vehicle_type = 'bicycle'
+        OR (
+          COALESCE(NULLIF(bike_model, ''), '') <> ''
+          AND COALESCE(NULLIF(bike_condition, ''), '') <> ''
+          AND COALESCE(NULLIF(license_front_url, ''), '') <> ''
+          AND COALESCE(NULLIF(license_back_url, ''), '') <> ''
+        )
+      )
     )
   )
 );
@@ -746,6 +759,7 @@ RETURNS TABLE (
   avatar_url TEXT,
   verification_status public.verification_status,
   is_online BOOLEAN,
+  vehicle_type TEXT,
   vehicle_details TEXT,
   bike_model TEXT,
   bike_condition TEXT,
@@ -816,6 +830,7 @@ BEGIN
         avatar_url,
         verification_status,
         is_online,
+        vehicle_type,
         vehicle_details,
         bike_model,
         bike_condition,
@@ -834,6 +849,7 @@ BEGIN
         matched_profile.avatar_url,
         matched_profile.verification_status,
         matched_profile.is_online,
+        matched_profile.vehicle_type,
         matched_profile.vehicle_details,
         matched_profile.bike_model,
         matched_profile.bike_condition,
@@ -890,7 +906,13 @@ BEGIN
       || jsonb_build_object(
         'full_name', synced_profile.full_name,
         'phone', synced_profile.phone,
-        'email', synced_profile.email
+        'email', synced_profile.email,
+        'vehicle_type', synced_profile.vehicle_type,
+        'vehicle_details', synced_profile.vehicle_details,
+        'bike_model', synced_profile.bike_model,
+        'bike_condition', synced_profile.bike_condition,
+        'license_front_url', synced_profile.license_front_url,
+        'license_back_url', synced_profile.license_back_url
       )
     WHERE u.id = current_user_id;
 
@@ -904,6 +926,7 @@ BEGIN
       synced_profile.avatar_url,
       synced_profile.verification_status,
       synced_profile.is_online,
+      synced_profile.vehicle_type,
       synced_profile.vehicle_details,
       synced_profile.bike_model,
       synced_profile.bike_condition,
@@ -925,6 +948,7 @@ RETURNS TABLE (
   avatar_url TEXT,
   verification_status public.verification_status,
   is_online BOOLEAN,
+  vehicle_type TEXT,
   vehicle_details TEXT,
   bike_model TEXT,
   bike_condition TEXT,
@@ -1030,7 +1054,13 @@ RETURNS TABLE (
   avatar_url TEXT,
   verification_status public.verification_status,
   is_online BOOLEAN,
+  vehicle_type TEXT,
   vehicle_details TEXT,
+  bike_model TEXT,
+  bike_condition TEXT,
+  license_front_url TEXT,
+  license_back_url TEXT,
+  rejection_reason TEXT,
   created_at TIMESTAMPTZ
 )
 LANGUAGE plpgsql
@@ -1058,7 +1088,13 @@ BEGIN
     p.avatar_url,
     p.verification_status,
     p.is_online,
+    p.vehicle_type,
     p.vehicle_details,
+    p.bike_model,
+    p.bike_condition,
+    p.license_front_url,
+    p.license_back_url,
+    p.rejection_reason,
     p.created_at;
 
   IF NOT FOUND THEN
