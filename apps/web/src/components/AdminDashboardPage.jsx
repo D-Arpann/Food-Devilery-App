@@ -111,6 +111,20 @@ function formatStatus(value = '') {
   return String(value || 'pending').replace(/_/g, ' ');
 }
 
+function formatVehicleType(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'bicycle') {
+    return 'Bicycle';
+  }
+  if (normalized === 'scooter') {
+    return 'Scooter';
+  }
+  if (normalized === 'motorbike') {
+    return 'Motorbike';
+  }
+  return '';
+}
+
 function MetricCard({ label, value, detail }) {
   return (
     <article className="admin-dashboard-metric">
@@ -129,7 +143,19 @@ function StatusPill({ status }) {
   );
 }
 
-function ApplicationCard({ type, title, subtitle, meta, status, reason, busy, onVerify, onReject }) {
+function ApplicationCard({
+  type,
+  title,
+  subtitle,
+  meta,
+  status,
+  reason,
+  detailItems = [],
+  documents = [],
+  busy,
+  onVerify,
+  onReject,
+}) {
   return (
     <article className="admin-dashboard-application-card">
       <div>
@@ -138,6 +164,32 @@ function ApplicationCard({ type, title, subtitle, meta, status, reason, busy, on
         <p>{subtitle}</p>
         <small>{meta}</small>
         {reason ? <small className="admin-dashboard-rejection-reason">Reason: {reason}</small> : null}
+        {detailItems.length ? (
+          <dl className="admin-dashboard-rider-details">
+            {detailItems.map((item) => (
+              <div key={item.label}>
+                <dt>{item.label}</dt>
+                <dd>{item.value || 'Not provided'}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        {documents.length ? (
+          <div className="admin-dashboard-rider-documents">
+            {documents.map((document) => (
+              <a
+                key={document.label}
+                href={document.url}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Open ${document.label}`}
+              >
+                <img src={document.url} alt="" />
+                <span>{document.label}</span>
+              </a>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="admin-dashboard-card-actions">
         <StatusPill status={status} />
@@ -617,20 +669,37 @@ export default function AdminDashboardPage({ session, supabase, onLogout }) {
                     <h2>{pendingRiders.length} pending</h2>
                   </div>
                 </div>
-                {pendingRiders.map((profile) => (
-                  <ApplicationCard
-                    key={profile.id}
-                    type="Rider"
-                    title={profile.full_name || 'Rider application'}
-                    subtitle={profile.phone || profile.email || 'No contact saved'}
-                    meta={profile.vehicle_details || `Applied ${formatDate(profile.created_at)}`}
-                    status={profile.verification_status}
-                    reason={profile.rejection_reason}
-                    busy={busyKey === `rider-${profile.id}`}
-                    onVerify={() => handleVerifyRider(profile)}
-                    onReject={() => handleRejectRider(profile)}
-                  />
-                ))}
+                {pendingRiders.map((profile) => {
+                  const vehicleType = String(profile.vehicle_type || '').toLowerCase();
+                  const documents = [
+                    profile.license_front_url ? { label: 'License front', url: profile.license_front_url } : null,
+                    profile.license_back_url ? { label: 'License back', url: profile.license_back_url } : null,
+                  ].filter(Boolean);
+                  const detailItems = [
+                    { label: 'Vehicle', value: formatVehicleType(profile.vehicle_type) },
+                    ...(vehicleType === 'bicycle' ? [] : [
+                      { label: 'Model', value: profile.bike_model },
+                      { label: 'Condition', value: profile.bike_condition },
+                    ]),
+                  ];
+
+                  return (
+                    <ApplicationCard
+                      key={profile.id}
+                      type="Rider"
+                      title={profile.full_name || 'Rider application'}
+                      subtitle={profile.phone || profile.email || 'No contact saved'}
+                      meta={profile.vehicle_details || `Applied ${formatDate(profile.created_at)}`}
+                      status={profile.verification_status}
+                      reason={profile.rejection_reason}
+                      detailItems={detailItems}
+                      documents={documents}
+                      busy={busyKey === `rider-${profile.id}`}
+                      onVerify={() => handleVerifyRider(profile)}
+                      onReject={() => handleRejectRider(profile)}
+                    />
+                  );
+                })}
                 {!pendingRiders.length ? <p className="admin-dashboard-note">Rider queue is clear.</p> : null}
               </div>
             </section>

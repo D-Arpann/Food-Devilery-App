@@ -619,6 +619,7 @@ function buildSessionCustomerSettings(session) {
     role: metadata.role || USER_ROLES.CUSTOMER,
     avatarUrl: metadata.avatar_url || '',
     verificationStatus: metadata.verification_status || 'verified',
+    vehicleType: metadata.vehicle_type || '',
     vehicleDetails: metadata.vehicle_details || '',
     bikeModel: metadata.bike_model || '',
     bikeCondition: metadata.bike_condition || '',
@@ -717,10 +718,16 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
     avatarUrl: sessionProfileSettings.avatarUrl || '',
   });
   const [riderForm, setRiderForm] = useState({
+    vehicleType: sessionProfileSettings.vehicleType || 'motorbike',
     bikeModel: sessionProfileSettings.bikeModel || '',
     bikeCondition: sessionProfileSettings.bikeCondition || '',
     licenseFrontFile: null,
     licenseBackFile: null,
+  });
+  const [showRiderApplicationForm, setShowRiderApplicationForm] = useState(false);
+  const [riderLicensePreviews, setRiderLicensePreviews] = useState({
+    licenseFrontFile: '',
+    licenseBackFile: '',
   });
   const [riderSubmitting, setRiderSubmitting] = useState(false);
   const [showAllQuickCategories, setShowAllQuickCategories] = useState(false);
@@ -738,7 +745,6 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
   const [locationError, setLocationError] = useState('');
 
   const {
-    restaurant: cartRestaurant,
     items: cartItems,
     groups: cartGroups,
     notice: cartNotice,
@@ -749,6 +755,14 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
     dismissNotice,
     getSummary,
   } = useCart();
+
+  useEffect(() => () => {
+    Object.values(riderLicensePreviews).forEach((previewUrl) => {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    });
+  }, [riderLicensePreviews]);
 
   const loadCustomerOrders = useCallback(async ({ silent = false } = {}) => {
     if (isTemporaryAuth || !session?.user?.id) {
@@ -1017,6 +1031,7 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
         });
         setRiderForm((current) => ({
           ...current,
+          vehicleType: data.vehicleType || current.vehicleType || 'motorbike',
           bikeModel: data.bikeModel || '',
           bikeCondition: data.bikeCondition || '',
         }));
@@ -1168,6 +1183,9 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
     : '';
   const riderApplicationRejected = riderApplicationStatus === 'rejected';
   const riderApplicationPending = riderApplicationStatus === 'pending';
+  const riderApplicationVerified = riderApplicationStatus === 'verified';
+  const riderVehicleType = riderForm.vehicleType || profileSettings.vehicleType || 'motorbike';
+  const riderNeedsLicenseDetails = riderVehicleType !== 'bicycle';
   const firstName = fullName.split(' ')[0] || fullName;
   const defaultAddressEntry = useMemo(
     () => profileSettings.addresses.find((entry) => entry.id === profileSettings.defaultAddressId) || null,
@@ -1573,7 +1591,29 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
   };
 
   const handleRiderFieldChange = (field) => (value) => {
-    setRiderForm((current) => ({ ...current, [field]: value }));
+    setRiderForm((current) => {
+      if (field === 'vehicleType' && value === 'bicycle') {
+        setRiderLicensePreviews((previewState) => {
+          Object.values(previewState).forEach((previewUrl) => {
+            if (previewUrl) {
+              URL.revokeObjectURL(previewUrl);
+            }
+          });
+          return { licenseFrontFile: '', licenseBackFile: '' };
+        });
+
+        return {
+          ...current,
+          vehicleType: value,
+          bikeModel: '',
+          bikeCondition: '',
+          licenseFrontFile: null,
+          licenseBackFile: null,
+        };
+      }
+
+      return { ...current, [field]: value };
+    });
     setProfileError('');
     setProfileMessage('');
   };
@@ -1583,6 +1623,12 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
 
     if (!file) {
       setRiderForm((current) => ({ ...current, [field]: null }));
+      setRiderLicensePreviews((current) => {
+        if (current[field]) {
+          URL.revokeObjectURL(current[field]);
+        }
+        return { ...current, [field]: '' };
+      });
       return;
     }
 
@@ -1599,11 +1645,19 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
     }
 
     setRiderForm((current) => ({ ...current, [field]: file }));
+    setRiderLicensePreviews((current) => {
+      if (current[field]) {
+        URL.revokeObjectURL(current[field]);
+      }
+      return { ...current, [field]: URL.createObjectURL(file) };
+    });
     setProfileError('');
     setProfileMessage('');
   };
 
   const handleSubmitRiderApplication = async () => {
+    const vehicleType = riderForm.vehicleType || 'motorbike';
+    const needsLicenseDetails = vehicleType !== 'bicycle';
     const bikeModel = String(riderForm.bikeModel || '').trim();
     const bikeCondition = String(riderForm.bikeCondition || '').trim();
 
@@ -1619,13 +1673,13 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
       return;
     }
 
-    if (!bikeModel || !bikeCondition) {
-      setProfileError('Add your bike model and condition.');
+    if (needsLicenseDetails && (!bikeModel || !bikeCondition)) {
+      setProfileError('Add your model and condition.');
       setProfileMessage('');
       return;
     }
 
-    if (!riderForm.licenseFrontFile || !riderForm.licenseBackFile) {
+    if (needsLicenseDetails && (!riderForm.licenseFrontFile || !riderForm.licenseBackFile)) {
       setProfileError('Upload license front and back photos.');
       setProfileMessage('');
       return;
@@ -1638,10 +1692,11 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
     const { data, error: riderError } = await submitRiderApplication(supabase, {
       riderName: profileSettings.fullName,
       phone: profileSettings.phone,
+      vehicleType,
       bikeModel,
       bikeCondition,
-      licenseFrontFile: riderForm.licenseFrontFile,
-      licenseBackFile: riderForm.licenseBackFile,
+      licenseFrontFile: needsLicenseDetails ? riderForm.licenseFrontFile : null,
+      licenseBackFile: needsLicenseDetails ? riderForm.licenseBackFile : null,
     });
 
     if (riderError) {
@@ -1654,21 +1709,32 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
       ...current,
       role: USER_ROLES.RIDER,
       verificationStatus: 'pending',
+      vehicleType: data?.vehicle_type || vehicleType,
       vehicleDetails: data?.vehicle_details || current.vehicleDetails || '',
-      bikeModel: data?.bike_model || bikeModel,
-      bikeCondition: data?.bike_condition || bikeCondition,
-      licenseFrontUrl: data?.license_front_url || current.licenseFrontUrl || '',
-      licenseBackUrl: data?.license_back_url || current.licenseBackUrl || '',
+      bikeModel: data?.bike_model || (needsLicenseDetails ? bikeModel : ''),
+      bikeCondition: data?.bike_condition || (needsLicenseDetails ? bikeCondition : ''),
+      licenseFrontUrl: needsLicenseDetails ? data?.license_front_url || current.licenseFrontUrl || '' : '',
+      licenseBackUrl: needsLicenseDetails ? data?.license_back_url || current.licenseBackUrl || '' : '',
       rejectionReason: '',
     }));
     setRiderForm((current) => ({
       ...current,
+      vehicleType,
       bikeModel,
       bikeCondition,
       licenseFrontFile: null,
       licenseBackFile: null,
     }));
+    setRiderLicensePreviews((current) => {
+      Object.values(current).forEach((previewUrl) => {
+        if (previewUrl) {
+          URL.revokeObjectURL(previewUrl);
+        }
+      });
+      return { licenseFrontFile: '', licenseBackFile: '' };
+    });
     await supabase.auth.refreshSession().catch(() => {});
+    setShowRiderApplicationForm(false);
     setProfileMessage('Rider application submitted. Admin verification is required before jobs appear.');
     setRiderSubmitting(false);
   };
@@ -2283,83 +2349,6 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
                   </button>
                 </div>
 
-                <div className="discover-rider-card">
-                  <div className="discover-profile-form-head">
-                    <div>
-                      <h3>Ride with us</h3>
-                      <p>Apply using your saved name and phone number.</p>
-                    </div>
-                    <span>
-                      {riderApplicationPending
-                        ? 'Pending review'
-                        : riderApplicationRejected
-                          ? 'Needs update'
-                          : riderApplicationStatus === 'verified'
-                            ? 'Verified'
-                            : 'Open'}
-                    </span>
-                  </div>
-
-                  {riderApplicationPending ? (
-                    <p className="discover-profile-alert" data-state="success">
-                      Your rider application is waiting for admin verification.
-                    </p>
-                  ) : null}
-
-                  {riderApplicationRejected ? (
-                    <p className="discover-profile-alert" data-state="error">
-                      {profileSettings.rejectionReason || 'Your rider application was rejected. Update the details and submit again.'}
-                    </p>
-                  ) : null}
-
-                  {riderApplicationStatus === 'verified' ? (
-                    <p className="discover-profile-alert" data-state="success">
-                      Rider accounts should use the mobile app for delivery work.
-                    </p>
-                  ) : null}
-
-                  {!riderApplicationPending && riderApplicationStatus !== 'verified' ? (
-                    <div className="discover-rider-fields">
-                      <Input
-                        label="Bike model"
-                        placeholder="Honda Dio"
-                        value={riderForm.bikeModel}
-                        onChangeText={handleRiderFieldChange('bikeModel')}
-                      />
-
-                      <Input
-                        label="Bike condition"
-                        placeholder="Good, serviced recently"
-                        value={riderForm.bikeCondition}
-                        onChangeText={handleRiderFieldChange('bikeCondition')}
-                      />
-
-                      <div className="discover-rider-upload-grid">
-                        <label className="discover-rider-upload">
-                          <span>License front</span>
-                          <input type="file" accept="image/*" onChange={handleRiderFileChange('licenseFrontFile')} />
-                          <strong>{riderForm.licenseFrontFile ? riderForm.licenseFrontFile.name : 'Upload front'}</strong>
-                        </label>
-
-                        <label className="discover-rider-upload">
-                          <span>License back</span>
-                          <input type="file" accept="image/*" onChange={handleRiderFileChange('licenseBackFile')} />
-                          <strong>{riderForm.licenseBackFile ? riderForm.licenseBackFile.name : 'Upload back'}</strong>
-                        </label>
-                      </div>
-
-                      <button
-                        type="button"
-                        className="discover-profile-save"
-                        onClick={handleSubmitRiderApplication}
-                        disabled={riderSubmitting}
-                      >
-                        {riderSubmitting ? 'Submitting application...' : riderApplicationRejected ? 'Resubmit application' : 'Apply to ride'}
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-
                 <div className="discover-address-manager">
                   <div className="discover-profile-form-head">
                     <div>
@@ -2471,6 +2460,117 @@ export default function DiscoveryPage({ session, supabase, onLogout }) {
                       </button>
                     </div>
                   </div>
+                </div>
+
+                <div className="discover-rider-entry">
+                  {!showRiderApplicationForm ? (
+                    <>
+                      {riderApplicationPending ? (
+                        <p className="discover-profile-alert" data-state="success">
+                          Your rider application is waiting for admin verification.
+                        </p>
+                      ) : null}
+
+                      {riderApplicationVerified ? (
+                        <p className="discover-profile-alert" data-state="success">
+                          Rider accounts should use the mobile app for delivery work.
+                        </p>
+                      ) : null}
+
+                      <button
+                        type="button"
+                        className="discover-profile-save discover-rider-entry-button"
+                        onClick={() => setShowRiderApplicationForm(true)}
+                        disabled={riderApplicationPending || riderApplicationVerified}
+                      >
+                        {riderApplicationRejected ? 'Update rider application' : 'Ride with us'}
+                      </button>
+                    </>
+                  ) : (
+                    <div className="discover-rider-card">
+                      <div className="discover-profile-form-head">
+                        <div>
+                          <h3>Ride with us</h3>
+                          <p>Apply using your saved name and phone number.</p>
+                        </div>
+                        <button
+                          type="button"
+                          className="discover-rider-close"
+                          onClick={() => setShowRiderApplicationForm(false)}
+                          aria-label="Close rider application form"
+                        >
+                          x
+                        </button>
+                      </div>
+
+                      {riderApplicationRejected ? (
+                        <p className="discover-profile-alert" data-state="error">
+                          {profileSettings.rejectionReason || 'Your rider application was rejected. Update the details and submit again.'}
+                        </p>
+                      ) : null}
+
+                      <div className="discover-rider-fields">
+                        <label className="discover-rider-select">
+                          <span>Vehicle type</span>
+                          <select
+                            value={riderVehicleType}
+                            onChange={(event) => handleRiderFieldChange('vehicleType')(event.target.value)}
+                          >
+                            <option value="bicycle">Bicycle</option>
+                            <option value="motorbike">Motorbike</option>
+                            <option value="scooter">Scooter</option>
+                          </select>
+                        </label>
+
+                        {riderNeedsLicenseDetails ? (
+                          <>
+                            <Input
+                              label="Model"
+                              placeholder="Honda Dio"
+                              value={riderForm.bikeModel}
+                              onChangeText={handleRiderFieldChange('bikeModel')}
+                            />
+
+                            <Input
+                              label="Condition"
+                              placeholder="Good, serviced recently"
+                              value={riderForm.bikeCondition}
+                              onChangeText={handleRiderFieldChange('bikeCondition')}
+                            />
+
+                            <div className="discover-rider-upload-grid">
+                              <label className={`discover-rider-upload ${riderLicensePreviews.licenseFrontFile ? 'has-preview' : ''}`}>
+                                <input type="file" accept="image/*" onChange={handleRiderFileChange('licenseFrontFile')} />
+                                {riderLicensePreviews.licenseFrontFile ? (
+                                  <img src={riderLicensePreviews.licenseFrontFile} alt="" />
+                                ) : null}
+                                <span>License front</span>
+                                <strong>{riderLicensePreviews.licenseFrontFile ? 'Selected' : 'Tap to choose photo'}</strong>
+                              </label>
+
+                              <label className={`discover-rider-upload ${riderLicensePreviews.licenseBackFile ? 'has-preview' : ''}`}>
+                                <input type="file" accept="image/*" onChange={handleRiderFileChange('licenseBackFile')} />
+                                {riderLicensePreviews.licenseBackFile ? (
+                                  <img src={riderLicensePreviews.licenseBackFile} alt="" />
+                                ) : null}
+                                <span>License back</span>
+                                <strong>{riderLicensePreviews.licenseBackFile ? 'Selected' : 'Tap to choose photo'}</strong>
+                              </label>
+                            </div>
+                          </>
+                        ) : null}
+
+                        <button
+                          type="button"
+                          className="discover-profile-save"
+                          onClick={handleSubmitRiderApplication}
+                          disabled={riderSubmitting}
+                        >
+                          {riderSubmitting ? 'Submitting application...' : riderApplicationRejected ? 'Resubmit application' : 'Apply to ride'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
             </div>
