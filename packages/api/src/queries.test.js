@@ -214,6 +214,7 @@ describe('rider applications', () => {
     const { data, error } = await submitRiderApplication(client, {
       riderName: 'Demo Customer',
       phone: '9800000201',
+      vehicleType: 'motorbike',
       bikeModel: 'Honda Dio',
       bikeCondition: 'Good',
       licenseFrontUrl: 'https://cdn.test/rider/license-front.jpg',
@@ -223,12 +224,35 @@ describe('rider applications', () => {
     assert.match(error.message, /license front and back/i);
   });
 
+  it('stores bicycle applications without bike model or license images', async () => {
+    const { client, store } = createRestaurantClient();
+
+    const { data, error } = await submitRiderApplication(client, {
+      riderName: 'Demo Customer',
+      phone: '9800000201',
+      vehicleType: 'bicycle',
+    });
+
+    assert.equal(error, null);
+    assert.equal(data.role, 'rider');
+    assert.equal(data.verification_status, 'pending');
+
+    const upsert = store.upserts.find((entry) => entry.table === 'user_profiles');
+    assert.equal(upsert.payload.vehicle_type, 'bicycle');
+    assert.equal(upsert.payload.bike_model, null);
+    assert.equal(upsert.payload.bike_condition, null);
+    assert.equal(upsert.payload.license_front_url, null);
+    assert.equal(upsert.payload.license_back_url, null);
+    assert.match(upsert.payload.vehicle_details, /Bicycle/);
+  });
+
   it('stores bike details and license document URLs with a pending rider role', async () => {
     const { client, store } = createRestaurantClient();
 
     const { data, error } = await submitRiderApplication(client, {
       riderName: 'Demo Customer',
       phone: '9800000201',
+      vehicleType: 'scooter',
       bikeModel: 'Honda Dio',
       bikeCondition: 'Good',
       licenseFrontUrl: 'https://cdn.test/rider/license-front.jpg',
@@ -240,6 +264,7 @@ describe('rider applications', () => {
     assert.equal(data.verification_status, 'pending');
 
     const upsert = store.upserts.find((entry) => entry.table === 'user_profiles');
+    assert.equal(upsert.payload.vehicle_type, 'scooter');
     assert.equal(upsert.payload.bike_model, 'Honda Dio');
     assert.equal(upsert.payload.bike_condition, 'Good');
     assert.equal(upsert.payload.license_front_url, 'https://cdn.test/rider/license-front.jpg');

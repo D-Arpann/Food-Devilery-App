@@ -16,9 +16,9 @@ const RESTAURANT_ORDER_SELECT =
   'id, customer_id, restaurant_id, rider_id, subtotal, delivery_fee, total_amount, status, delivery_address, delivery_place_id, delivery_lat, delivery_lng, rider_lat, rider_lng, rider_heading, rider_speed_mps, rider_accuracy_m, rider_location_updated_at, estimated_arrival_minutes, payment_status, created_at, updated_at';
 const RIDER_ORDER_SELECT = '*';
 const RIDER_PROFILE_SELECT =
-  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason, created_at';
+  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_type, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason, created_at';
 const ADMIN_PROFILE_SELECT =
-  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason, created_at';
+  'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_type, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason, created_at';
 const ADMIN_RESTAURANT_SELECT =
   'id, owner_id, name, description, image_url, banner_url, profile_image_url, address, formatted_address, google_place_id, latitude, longitude, contact_phone, contact_email, is_active, verification_status, rejection_reason, created_at';
 const ADMIN_ORDER_SELECT =
@@ -38,6 +38,12 @@ const DEFAULT_OPERATING_HOURS = [
   { day: 'Sat', open: '11:00', close: '22:00', closed: false },
   { day: 'Sun', open: '11:00', close: '20:00', closed: false },
 ];
+const RIDER_VEHICLE_TYPES = ['bicycle', 'motorbike', 'scooter'];
+const RIDER_VEHICLE_LABELS = {
+  bicycle: 'Bicycle',
+  motorbike: 'Motorbike',
+  scooter: 'Scooter',
+};
 
 export function getDefaultRestaurantOperatingHours() {
   return DEFAULT_OPERATING_HOURS.map((item) => ({ ...item }));
@@ -103,6 +109,11 @@ function normalizeVerificationStatus(value = '') {
 
 function normalizeRejectionReason(value = '') {
   return String(value || '').trim();
+}
+
+function normalizeRiderVehicleType(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return RIDER_VEHICLE_TYPES.includes(normalized) ? normalized : 'motorbike';
 }
 
 function mergeOwnersIntoRestaurants(restaurants = [], profiles = []) {
@@ -218,6 +229,7 @@ async function resolveRiderId(client, riderId) {
 }
 
 function normalizeRiderApplicationPayload(payload = {}) {
+  const vehicleType = normalizeRiderVehicleType(payload.vehicleType || payload.vehicle_type);
   const bikeModel = String(payload.bikeModel || payload.bike_model || '').trim();
   const bikeCondition = String(payload.bikeCondition || payload.bike_condition || '').trim();
   const licenseFrontUrl = String(payload.licenseFrontUrl || payload.license_front_url || '').trim();
@@ -242,6 +254,7 @@ function normalizeRiderApplicationPayload(payload = {}) {
     ).trim(),
     bikeModel,
     bikeCondition,
+    vehicleType,
     licenseFrontUrl,
     licenseBackUrl,
     licenseFrontFile: payload.licenseFrontFile || payload.license_front_file || null,
@@ -250,14 +263,20 @@ function normalizeRiderApplicationPayload(payload = {}) {
   };
 }
 
-function buildRiderVehicleDetails({ bikeModel, bikeCondition, vehicleDetails }) {
+function buildRiderVehicleDetails({ bikeModel, bikeCondition, vehicleDetails, vehicleType }) {
   const providedDetails = String(vehicleDetails || '').trim();
   if (providedDetails) {
     return providedDetails;
   }
 
+  const vehicleLabel = RIDER_VEHICLE_LABELS[vehicleType] || RIDER_VEHICLE_LABELS.motorbike;
+  if (vehicleType === 'bicycle') {
+    return `Vehicle: ${vehicleLabel}`;
+  }
+
   return [
-    bikeModel ? `Bike model: ${bikeModel}` : '',
+    `Vehicle: ${vehicleLabel}`,
+    bikeModel ? `Model: ${bikeModel}` : '',
     bikeCondition ? `Condition: ${bikeCondition}` : '',
     'License front and back uploaded.',
   ].filter(Boolean).join(' ');
@@ -1391,6 +1410,7 @@ export async function submitRiderApplication(client, payload = {}) {
     phone,
     bikeModel,
     bikeCondition,
+    vehicleType,
     licenseFrontUrl,
     licenseBackUrl,
     licenseFrontFile,
@@ -1409,23 +1429,28 @@ export async function submitRiderApplication(client, payload = {}) {
     }
 
     const user = await getAuthenticatedUser(client);
+    const needsLicenseDetails = vehicleType !== 'bicycle';
 
-    if (!bikeModel) {
+    if (needsLicenseDetails && !bikeModel) {
       throw new Error('Enter your bike model.');
     }
 
-    if (!bikeCondition) {
+    if (needsLicenseDetails && !bikeCondition) {
       throw new Error('Enter your bike condition.');
     }
 
-    const uploadedFront = licenseFrontUrl || (licenseFrontFile
-      ? (await uploadRiderDocument(client, user.id, licenseFrontFile, 'front')).data?.url
-      : '');
-    const uploadedBack = licenseBackUrl || (licenseBackFile
-      ? (await uploadRiderDocument(client, user.id, licenseBackFile, 'back')).data?.url
-      : '');
+    const uploadedFront = needsLicenseDetails
+      ? licenseFrontUrl || (licenseFrontFile
+        ? (await uploadRiderDocument(client, user.id, licenseFrontFile, 'front')).data?.url
+        : '')
+      : null;
+    const uploadedBack = needsLicenseDetails
+      ? licenseBackUrl || (licenseBackFile
+        ? (await uploadRiderDocument(client, user.id, licenseBackFile, 'back')).data?.url
+        : '')
+      : null;
 
-    if (!uploadedFront || !uploadedBack) {
+    if (needsLicenseDetails && (!uploadedFront || !uploadedBack)) {
       throw new Error('Upload license front and back images.');
     }
 
@@ -1446,8 +1471,9 @@ export async function submitRiderApplication(client, payload = {}) {
       role: USER_ROLES.RIDER,
       verification_status: 'pending',
       is_online: false,
-      bike_model: bikeModel,
-      bike_condition: bikeCondition,
+      vehicle_type: vehicleType,
+      bike_model: needsLicenseDetails ? bikeModel : null,
+      bike_condition: needsLicenseDetails ? bikeCondition : null,
       license_front_url: uploadedFront,
       license_back_url: uploadedBack,
       rejection_reason: null,
@@ -1457,6 +1483,7 @@ export async function submitRiderApplication(client, payload = {}) {
       bikeModel,
       bikeCondition,
       vehicleDetails,
+      vehicleType,
     });
 
     const { error: metadataError } = await client.auth.updateUser({ data: nextMetadata });
@@ -1477,8 +1504,9 @@ export async function submitRiderApplication(client, payload = {}) {
       verification_status: 'pending',
       is_online: false,
       vehicle_details: nextMetadata.vehicle_details || existingProfile?.vehicle_details || null,
-      bike_model: bikeModel,
-      bike_condition: bikeCondition,
+      vehicle_type: vehicleType,
+      bike_model: needsLicenseDetails ? bikeModel : null,
+      bike_condition: needsLicenseDetails ? bikeCondition : null,
       license_front_url: uploadedFront,
       license_back_url: uploadedBack,
       rejection_reason: null,
