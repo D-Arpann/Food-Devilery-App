@@ -3,7 +3,8 @@
 -- Description: Admin account and mock app data for local/demo setup
 -- Test OTP for all seeded phone accounts: 123456
 -- Admin phone: 9800000000
--- Restaurant phone: 9800000001
+-- Demo restaurant phones: 9800000001, 9800000002, 9800000003
+-- Seeded restaurant phones: 9811001001 through 9811001020
 -- Customer phone: 9800000100
 -- Rider phone: 9800000200
 -- ==========================================
@@ -289,7 +290,7 @@ VALUES
     'admin@chitomitho.local',
     NULL,
     NOW(),
-    '+9779800000000',
+    '9779800000000',
     NOW(),
     '{"provider":"phone","providers":["phone"],"role":"admin","verification_status":"verified"}'::jsonb,
     '{"full_name":"Chito Mitho Admin","phone":"+9779800000000","email":"admin@chitomitho.local"}'::jsonb,
@@ -308,7 +309,7 @@ VALUES
     'demo.restaurant1@chitomitho.local',
     NULL,
     NOW(),
-    '+9779800000001',
+    '9779800000001',
     NOW(),
     '{"provider":"phone","providers":["phone"],"role":"restaurant_owner","verification_status":"verified"}'::jsonb,
     '{"full_name":"Himalayan Momo House","phone":"+9779800000001","email":"demo.restaurant1@chitomitho.local"}'::jsonb,
@@ -327,7 +328,7 @@ VALUES
     'demo.restaurant2@chitomitho.local',
     NULL,
     NOW(),
-    '+9779800000002',
+    '9779800000002',
     NOW(),
     '{"provider":"phone","providers":["phone"],"role":"restaurant_owner","verification_status":"verified"}'::jsonb,
     '{"full_name":"Kathmandu Spice Kitchen","phone":"+9779800000002","email":"demo.restaurant2@chitomitho.local"}'::jsonb,
@@ -346,7 +347,7 @@ VALUES
     'demo.restaurant3@chitomitho.local',
     NULL,
     NOW(),
-    '+9779800000003',
+    '9779800000003',
     NOW(),
     '{"provider":"phone","providers":["phone"],"role":"restaurant_owner","verification_status":"verified"}'::jsonb,
     '{"full_name":"Newa Khaja Corner","phone":"+9779800000003","email":"demo.restaurant3@chitomitho.local"}'::jsonb,
@@ -365,7 +366,7 @@ VALUES
     'demo.customer@chitomitho.local',
     NULL,
     NOW(),
-    '+9779800000100',
+    '9779800000100',
     NOW(),
     '{"provider":"phone","providers":["phone"],"role":"customer","verification_status":"verified"}'::jsonb,
     '{"full_name":"Demo Customer","phone":"+9779800000100","email":"demo.customer@chitomitho.local","address":"Herald College, Bhagwati marg, Sano Gaucharan","default_address_id":"address-home","saved_addresses":[{"id":"address-home","label":"College","address":"Herald College, Bhagwati marg, Sano Gaucharan","formattedAddress":"Herald College, Bhagwati marg, Sano Gaucharan, Kathmandu-01, Kathmandu Metropolitan City, Kathmandu, Bagamati Province, 44600, Nepal","coordinates":{"latitude":27.7106,"longitude":85.3239},"placeId":"demo-herald-college"}]}'::jsonb,
@@ -384,7 +385,7 @@ VALUES
     'demo.rider@chitomitho.local',
     NULL,
     NOW(),
-    '+9779800000200',
+    '9779800000200',
     NOW(),
     '{"provider":"phone","providers":["phone"],"role":"rider","verification_status":"verified"}'::jsonb,
     '{"full_name":"Demo Rider","phone":"+9779800000200","email":"demo.rider@chitomitho.local","vehicle_type":"motorbike"}'::jsonb,
@@ -778,7 +779,7 @@ SET
   updated_at = EXCLUDED.updated_at;
 
 -- Real Kathmandu restaurant seed data sourced from current Pathao Food listings.
--- These accounts are content owners only; demo login numbers above stay reserved for QA.
+-- These seeded restaurant owner accounts also use local test OTP 123456.
 WITH real_restaurants (
   owner_id,
   restaurant_id,
@@ -844,7 +845,7 @@ SELECT
   rr.contact_email,
   NULL,
   NOW(),
-  rr.contact_phone,
+  REGEXP_REPLACE(rr.contact_phone, '\D', '', 'g'),
   NOW(),
   jsonb_build_object('provider', 'phone', 'providers', jsonb_build_array('phone'), 'role', 'restaurant_owner', 'verification_status', 'verified'),
   jsonb_build_object('full_name', rr.name, 'phone', rr.contact_phone, 'email', rr.contact_email),
