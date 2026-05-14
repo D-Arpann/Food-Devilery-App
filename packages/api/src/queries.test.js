@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   rejectAdminRestaurantApplication,
   rejectAdminRiderApplication,
@@ -275,6 +277,19 @@ describe('rider applications', () => {
 });
 
 describe('admin application rejection', () => {
+  it('migrates restaurant rejection reasons for existing databases', () => {
+    const migrationsDir = resolve(process.cwd(), 'supabase/migrations');
+    const forwardMigrations = readdirSync(migrationsDir)
+      .filter((fileName) => fileName.endsWith('.sql') && fileName !== '000_wipe_database.sql')
+      .map((fileName) => readFileSync(resolve(migrationsDir, fileName), 'utf8'))
+      .join('\n');
+
+    assert.match(
+      forwardMigrations,
+      /ALTER TABLE public\.restaurants\s+ADD COLUMN IF NOT EXISTS rejection_reason TEXT/i,
+    );
+  });
+
   it('stores a rejection reason for restaurant applications', async () => {
     const { client, store } = createRestaurantClient();
 

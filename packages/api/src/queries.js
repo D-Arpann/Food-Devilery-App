@@ -1308,27 +1308,23 @@ export function subscribeToCustomerOrders(client, customerId, onChange, onError)
   }
 
   try {
+    const handleChange = (payload) => {
+      const row = payload.new;
+      if (row && row.customer_id === customerId) {
+        onChange?.(payload);
+      }
+    };
+
     const channel = client
       .channel(`customer-orders-${customerId}`)
       .on(
         'postgres_changes',
         {
-          event: 'INSERT',
+          event: '*',
           schema: 'public',
           table: TABLES.CUSTOMER_ORDERS,
-          filter: `customer_id=eq.${customerId}`,
         },
-        (payload) => onChange?.(payload),
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: TABLES.CUSTOMER_ORDERS,
-          filter: `customer_id=eq.${customerId}`,
-        },
-        (payload) => onChange?.(payload),
+        handleChange,
       )
       .subscribe((status) => {
         if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
