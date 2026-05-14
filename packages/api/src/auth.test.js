@@ -185,11 +185,47 @@ describe('phone OTP profile sync', () => {
     assert.match(error.message, /Run 000_wipe_database\.sql/);
     assert.deepEqual(store.rpcCalls, ['sync_login_profile']);
   });
+
+  it('does not route seeded restaurant phones to customer signup when DB sync is missing', async () => {
+    const { client } = createOtpClient({
+      rpcError: {
+        code: 'PGRST202',
+        message: 'Could not find the function public.sync_login_profile',
+      },
+    });
+
+    const { data, error } = await verifyOtpAndSyncProfile(client, {
+      phone: '+9779811001001',
+      token: '123456',
+    });
+
+    assert.equal(data.needsSignup, false);
+    assert.match(error.message, /Seeded account exists/);
+  });
 });
 
 describe('OTP configuration', () => {
   it('uses six digit OTP codes app wide', () => {
     assert.equal(AUTH_OTP_LENGTH, 6);
+  });
+
+  it('allows 123456 OTP login for every seeded auth phone', () => {
+    const seedSql = readFileSync(
+      resolve(process.cwd(), 'supabase/migrations/001_insert_mock_data.sql'),
+      'utf8',
+    );
+    const configToml = readFileSync(
+      resolve(process.cwd(), 'supabase/config.toml'),
+      'utf8',
+    );
+    const seededPhones = [
+      ...new Set([...seedSql.matchAll(/'\+977\d{10}'/g)].map(([phone]) => phone.slice(2, -1))),
+    ].sort();
+
+    assert.ok(seededPhones.length > 0, 'seed SQL includes phone auth accounts');
+    seededPhones.forEach((phone) => {
+      assert.match(configToml, new RegExp(`"${phone}"\\s*=\\s*"123456"`));
+    });
   });
 });
 
@@ -309,6 +345,23 @@ describe('seeded OTP accounts', () => {
     assert.match(schemaSql, /REGEXP_REPLACE\(COALESCE\(p\.phone, ''\), '\\D', '', 'g'\)/);
     assert.match(schemaSql, /SET owner_id = current_user_id/);
     assert.match(schemaSql, /GRANT EXECUTE ON FUNCTION public\.sync_login_profile\(\) TO authenticated/);
+  });
+
+  it('normalizes seeded auth phones to Supabase format and app profile phones to E.164', () => {
+    const migrationsDir = resolve(process.cwd(), 'supabase/migrations');
+    const migrationSql = readFileSync(
+      resolve(migrationsDir, '20260514064047_add_restaurant_rejection_reason.sql'),
+      'utf8',
+    );
+
+    assert.match(migrationSql, /UPDATE auth\.users[\s\S]*phone ~ '\^\\\+977\[0-9\]\{10\}\$'/);
+    assert.match(migrationSql, /UPDATE public\.user_profiles[\s\S]*phone ~ '\^977\[0-9\]\{10\}\$'/);
+    assert.match(migrationSql, /UPDATE auth\.identities[\s\S]*identity_data ->> 'phone' ~ '\^\\\+977\[0-9\]\{10\}\$'/);
+    assert.match(migrationSql, /CREATE TEMP TABLE seeded_owner_profile_map/);
+    assert.match(migrationSql, /UPDATE public\.restaurants[\s\S]*owner_id = m\.canonical_id/);
+    assert.match(migrationSql, /DELETE FROM auth\.users[\s\S]*u\.id = m\.stale_id/);
+    assert.match(migrationSql, /CREATE TEMP TABLE seeded_orphan_phone_auth_map/);
+    assert.match(migrationSql, /REGEXP_REPLACE\(COALESCE\(canonical\.phone, ''\), '\\D', '', 'g'\)/);
   });
 
   it('does not make admin policy read user_profiles recursively', () => {

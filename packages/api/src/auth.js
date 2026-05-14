@@ -2,9 +2,11 @@ import {
   TABLES,
   USER_ROLES,
   getDefaultSavedAddress,
+  isValidNepalPhoneNumber,
   normalizeSavedAddresses,
   onlyDigits,
   resolveDefaultSavedAddressId,
+  toNepalE164Phone,
 } from '@repo/utils';
 
 function fallbackEmail(phone, userId) {
@@ -19,6 +21,22 @@ function fallbackName(phone) {
   return suffix ? `User ${suffix}` : 'Customer';
 }
 
+function normalizeAppPhone(phone) {
+  if (!phone) {
+    return '';
+  }
+
+  if (isValidNepalPhoneNumber(phone)) {
+    return toNepalE164Phone(phone);
+  }
+
+  return String(phone).trim();
+}
+
+function toSupabaseAuthPhone(phone) {
+  return onlyDigits(phone);
+}
+
 const SEEDED_LOGIN_PHONE_DIGITS = new Set([
   '9800000000',
   '9800000001',
@@ -26,6 +44,7 @@ const SEEDED_LOGIN_PHONE_DIGITS = new Set([
   '9800000003',
   '9800000100',
   '9800000200',
+  ...Array.from({ length: 20 }, (_, index) => `98110010${String(index + 1).padStart(2, '0')}`),
 ]);
 const CUSTOMER_SETTINGS_SELECT =
   'id, full_name, email, phone, role, avatar_url, verification_status, is_online, vehicle_type, vehicle_details, bike_model, bike_condition, license_front_url, license_back_url, rejection_reason';
@@ -57,7 +76,7 @@ function getTrustedAuthProfile(authData, phone) {
     id: user.id,
     full_name: userMetadata.full_name || fallbackName(phone || user.phone),
     email: user.email || userMetadata.email || fallbackEmail(phone || user.phone, user.id),
-    phone: user.phone || userMetadata.phone || phone,
+    phone: normalizeAppPhone(phone || userMetadata.phone || user.phone),
     role,
     avatar_url: userMetadata.avatar_url || null,
     verification_status: appMetadata.verification_status || 'verified',
@@ -84,10 +103,11 @@ async function findExistingProfile(client, phone, userId) {
   }
 
   if (phone) {
+    const appPhone = normalizeAppPhone(phone);
     const { data: byPhone, error: byPhoneError } = await client
       .from(TABLES.USER_PROFILES)
       .select('*')
-      .eq('phone', phone)
+      .eq('phone', appPhone)
       .maybeSingle();
 
     if (byPhoneError) {
@@ -192,7 +212,9 @@ async function refreshSessionAfterProfileSync(client, authData) {
 }
 
 export async function sendPhoneOtp(client, phone) {
-  const { data, error } = await client.auth.signInWithOtp({ phone });
+  const { data, error } = await client.auth.signInWithOtp({
+    phone: toSupabaseAuthPhone(phone),
+  });
   return { data, error };
 }
 
@@ -207,13 +229,15 @@ export async function sendEmailOtp(client, email) {
 }
 
 export async function sendPhoneChangeOtp(client, phone) {
-  const { data, error } = await client.auth.updateUser({ phone });
+  const { data, error } = await client.auth.updateUser({
+    phone: toSupabaseAuthPhone(phone),
+  });
   return { data, error };
 }
 
 export async function verifyPhoneOtp(client, phone, token) {
   const { data, error } = await client.auth.verifyOtp({
-    phone,
+    phone: toSupabaseAuthPhone(phone),
     token,
     type: 'sms',
   });
@@ -231,7 +255,7 @@ export async function verifyEmailOtp(client, email, token) {
 
 export async function verifyPhoneChangeOtp(client, phone, token) {
   const { data, error } = await client.auth.verifyOtp({
-    phone,
+    phone: toSupabaseAuthPhone(phone),
     token,
     type: 'phone_change',
   });
@@ -254,11 +278,12 @@ export async function upsertCurrentUserProfile(client, profileInput = {}) {
     };
   }
 
-  const phone =
+  const phone = normalizeAppPhone(
     profileInput.phone ||
     user.phone ||
     user.user_metadata?.phone ||
-    '';
+    '',
+  );
 
   const fullName =
     profileInput.full_name ||
@@ -342,9 +367,10 @@ export async function upsertCurrentUserProfile(client, profileInput = {}) {
 
 export async function verifyOtpAndSyncProfile(client, payload) {
   const { phone, token, profile } = payload;
+  const appPhone = normalizeAppPhone(phone);
   const { data: authData, error: authError } = await verifyPhoneOtp(
     client,
-    phone,
+    appPhone,
     token,
   );
 
@@ -356,7 +382,7 @@ export async function verifyOtpAndSyncProfile(client, payload) {
     return { data: authData, error: null };
   }
 
-  const trustedAuthProfile = getTrustedAuthProfile(authData, phone);
+  const trustedAuthProfile = getTrustedAuthProfile(authData, appPhone);
 
   if (trustedAuthProfile) {
     return {
@@ -368,7 +394,7 @@ export async function verifyOtpAndSyncProfile(client, payload) {
   const userId = authData?.user?.id || authData?.session?.user?.id;
   const { data: existingProfile, error: lookupError } = await findExistingProfile(
     client,
-    phone,
+    appPhone,
     userId,
   );
 
@@ -401,7 +427,7 @@ export async function verifyOtpAndSyncProfile(client, payload) {
   }
 
   if (!existingProfile && (!profile || Object.keys(profile).length === 0)) {
-    if (isSeededLoginPhone(phone)) {
+    if (isSeededLoginPhone(appPhone)) {
       return {
         data: { ...authData, profile: null, needsSignup: false },
         error: {
@@ -420,7 +446,7 @@ export async function verifyOtpAndSyncProfile(client, payload) {
   if (!existingProfile || !profile || Object.keys(profile).length === 0) {
     if (!existingProfile) {
       const { data: profileData, error: profileError } = await upsertCurrentUserProfile(client, {
-        phone,
+        phone: appPhone,
         ...(profile || {}),
       });
 
@@ -444,7 +470,7 @@ export async function verifyOtpAndSyncProfile(client, payload) {
   }
 
   const { data: profileData, error: profileError } = await upsertCurrentUserProfile(client, {
-    phone,
+    phone: appPhone,
     ...profile,
   });
 
@@ -497,7 +523,7 @@ export async function completeSignupProfile(client, payload) {
 
 function buildCustomerSettingsRecord({ profile, user }) {
   const metadata = user?.user_metadata || {};
-  const phone = profile?.phone || user?.phone || metadata.phone || '';
+  const phone = normalizeAppPhone(profile?.phone || user?.phone || metadata.phone || '');
   const fullName =
     profile?.full_name ||
     metadata.full_name ||

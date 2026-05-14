@@ -79,7 +79,7 @@ export function getDefaultSavedAddress(addresses = [], preferredId = '', fallbac
   );
 }
 
-export function getShortAddress(value = '', maxParts = 3) {
+export function getShortAddress(value = '', maxParts = 2) {
   const normalized = normalizeDeliveryAddress(value, '');
   if (!normalized) {
     return '';
