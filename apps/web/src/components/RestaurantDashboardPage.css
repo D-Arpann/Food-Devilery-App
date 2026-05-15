@@ -505,6 +505,12 @@
   flex-wrap: wrap;
 }
 
+.restaurant-dashboard-actions-spaced {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border, #ececec);
+}
+
 .restaurant-dashboard-category-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

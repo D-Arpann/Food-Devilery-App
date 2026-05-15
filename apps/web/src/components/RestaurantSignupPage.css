@@ -621,6 +621,36 @@
   object-fit: cover;
 }
 
+.restaurant-signup-preview-banner-clickable {
+  cursor: pointer;
+  position: relative;
+  transition: filter 0.2s ease;
+}
+
+.restaurant-signup-preview-banner-clickable:hover {
+  filter: brightness(0.88);
+}
+
+.restaurant-signup-preview-overlay {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(30, 30, 30, 0.55);
+  color: #ffffff;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.restaurant-signup-preview-banner-clickable:hover .restaurant-signup-preview-overlay {
+  opacity: 1;
+}
+
 .restaurant-signup-preview-body {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
@@ -643,6 +673,36 @@
   font-size: 1.5rem;
   font-weight: 900;
   box-shadow: 0 10px 24px rgba(30, 30, 30, 0.16);
+}
+
+.restaurant-signup-preview-avatar-clickable {
+  cursor: pointer;
+  position: relative;
+  transition: filter 0.2s ease;
+}
+
+.restaurant-signup-preview-avatar-clickable:hover {
+  filter: brightness(0.85);
+}
+
+.restaurant-signup-avatar-overlay {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(30, 30, 30, 0.6);
+  color: #ffffff;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.restaurant-signup-preview-avatar-clickable:hover .restaurant-signup-avatar-overlay {
+  opacity: 1;
 }
 
 .restaurant-signup-preview-avatar img {

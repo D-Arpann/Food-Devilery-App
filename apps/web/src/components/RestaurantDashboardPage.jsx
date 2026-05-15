@@ -19,6 +19,7 @@ import {
   getMenuCategoryOptions,
   getRestaurantBannerUrl,
   getRestaurantProfileImageUrl,
+  getShortAddress,
   normalizeMenuCategory,
 } from '@repo/utils';
 import './RestaurantDashboardPage.css';
@@ -270,8 +271,8 @@ function OrderDetails({ order, busy, onAccept, onDecline, onAdvance }) {
           <strong>{getOrderItemCount(order)}</strong>
         </div>
         <div>
-          <span>Total</span>
-          <strong>{formatNpr(order.total_amount)}</strong>
+          <span>Subtotal</span>
+          <strong>{formatNpr(order.subtotal || order.total_amount)}</strong>
         </div>
       </div>
 
@@ -357,7 +358,7 @@ function MenuEditor({
         <span>Available to customers</span>
       </label>
 
-      <div className="restaurant-dashboard-actions">
+      <div className="restaurant-dashboard-actions restaurant-dashboard-actions-spaced">
         <button type="submit" className="restaurant-dashboard-primary" disabled={saving}>
           {saving ? 'Saving...' : form.id ? 'Save changes' : 'Add item'}
         </button>
@@ -408,11 +409,11 @@ function RestaurantProfileSettings({
       </label>
 
       <label className="restaurant-dashboard-textarea">
-        <span>Address</span>
-        <textarea value={form.address} onChange={(event) => onChange('address', event.target.value)} placeholder="Baneshwor, Kathmandu" required />
+        <span>Address <small style={{ fontWeight: 500, color: '#8a827b' }}>(set during registration)</small></span>
+        <textarea value={form.address} readOnly tabIndex={-1} style={{ opacity: 0.65, cursor: 'not-allowed', resize: 'none' }} />
       </label>
 
-      <div className="restaurant-dashboard-actions">
+      <div className="restaurant-dashboard-actions restaurant-dashboard-actions-spaced">
         <button type="submit" className="restaurant-dashboard-primary" disabled={saving}>
           {saving ? 'Saving profile...' : 'Save profile'}
         </button>
@@ -955,9 +956,6 @@ export default function RestaurantDashboardPage({ session, supabase, onLogout })
           </button>
 
           <div className="restaurant-dashboard-nav-actions">
-            <button type="button" className="restaurant-dashboard-secondary" onClick={handleRefresh} disabled={loading}>
-              {loading ? 'Refreshing...' : 'Refresh'}
-            </button>
             <button type="button" className="restaurant-dashboard-logout" onClick={onLogout}>Logout</button>
           </div>
         </div>
@@ -989,7 +987,7 @@ export default function RestaurantDashboardPage({ session, supabase, onLogout })
               </label>
               <div>
                 <strong>{restaurant.name}</strong>
-                <span>{restaurant.address || 'Kathmandu Valley'}</span>
+                <span>{getShortAddress(restaurant.address || 'Kathmandu Valley')}</span>
               </div>
             </div>
           </div>

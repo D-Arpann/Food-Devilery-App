@@ -9,7 +9,7 @@ import {
   verifyPhoneChangeOtp,
 } from '@repo/api'
 import { Button, Input, Logo } from '@repo/ui'
-import { AUTH_OTP_LENGTH, onlyDigits, toNepalE164Phone } from '@repo/utils'
+import { AUTH_OTP_LENGTH, getShortAddress, onlyDigits, toNepalE164Phone } from '@repo/utils'
 import './RestaurantSignupPage.css'
 import GoogleAddressPicker from './GoogleAddressPicker'
 
@@ -819,39 +819,33 @@ export default function RestaurantSignupPage({
                 <div className="restaurant-signup-card-head">
                   <span className="restaurant-signup-card-kicker"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="8.5" cy="10" r="1.5" /><path d="M21 15l-4.5-4.5L11 16l-2-2-4 4" /></svg> Step 5 of 5</span>
                   <h2>Preview profile</h2>
-                  <p>Add a profile photo and banner, then confirm the restaurant profile.</p>
+                  <p>Tap the banner or profile photo to upload images, then confirm your restaurant profile.</p>
                 </div>
 
                 <form className="restaurant-signup-form" onSubmit={handleConfirmSubmit}>
-                  <div className="restaurant-signup-upload-grid">
-                    <label className="restaurant-signup-upload">
-                      <span>Profile photo</span>
-                      <input type="file" accept="image/*" onChange={handleImageFileChange('profile')} />
-                      <strong>{profileImageFile ? profileImageFile.name : 'Add a photo'}</strong>
-                    </label>
-
-                    <label className="restaurant-signup-upload">
-                      <span>Banner</span>
-                      <input type="file" accept="image/*" onChange={handleImageFileChange('banner')} />
-                      <strong>{bannerImageFile ? bannerImageFile.name : 'Update banner'}</strong>
-                    </label>
-                  </div>
-
                   <div className="restaurant-signup-preview-card">
-                    <div className="restaurant-signup-preview-banner">
-                      {bannerPreviewUrl ? <img src={bannerPreviewUrl} alt="" /> : <span>Banner preview</span>}
-                    </div>
-                    <div className="restaurant-signup-preview-body">
-                      <div className="restaurant-signup-preview-avatar">
-                        {profilePreviewUrl ? <img src={profilePreviewUrl} alt="" /> : <span>{payload.restaurantName.slice(0, 1).toUpperCase()}</span>}
+                    <label className="restaurant-signup-preview-banner restaurant-signup-preview-banner-clickable">
+                      <input type="file" accept="image/*" onChange={handleImageFileChange('banner')} style={{ display: 'none' }} />
+                      {bannerPreviewUrl ? <img src={bannerPreviewUrl} alt="" /> : <span>Tap to add banner</span>}
+                      <div className="restaurant-signup-preview-overlay">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18" aria-hidden="true"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" /><circle cx="12" cy="13" r="4" /></svg>
                       </div>
+                    </label>
+                    <div className="restaurant-signup-preview-body">
+                      <label className="restaurant-signup-preview-avatar restaurant-signup-preview-avatar-clickable">
+                        <input type="file" accept="image/*" onChange={handleImageFileChange('profile')} style={{ display: 'none' }} />
+                        {profilePreviewUrl ? <img src={profilePreviewUrl} alt="" /> : <span>{payload.restaurantName.slice(0, 1).toUpperCase()}</span>}
+                        <div className="restaurant-signup-avatar-overlay">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" aria-hidden="true"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" /><circle cx="12" cy="13" r="4" /></svg>
+                        </div>
+                      </label>
                       <div className="restaurant-signup-preview-copy">
                         <h3>{payload.restaurantName}</h3>
                         <p>{payload.description}</p>
                         <dl>
                           <div><dt>Email</dt><dd>{payload.email}</dd></div>
                           <div><dt>Phone</dt><dd>{toNepalE164Phone(payload.phone)}</dd></div>
-                          <div><dt>Location</dt><dd>{payload.formattedAddress || payload.location}</dd></div>
+                          <div><dt>Location</dt><dd>{getShortAddress(payload.formattedAddress || payload.location)}</dd></div>
                         </dl>
                       </div>
                     </div>
