@@ -7,11 +7,12 @@ import {
   rejectAdminRestaurantApplication,
   rejectAdminRiderApplication,
   setAdminProfileStatus,
+  subscribeToRestaurantFeed,
   verifyAdminRestaurantApplication,
   verifyAdminRiderApplication,
 } from '@repo/api';
 import { Logo } from '@repo/ui';
-import { formatNpr, USER_ROLES } from '@repo/utils';
+import { formatNpr, getShortAddress, USER_ROLES } from '@repo/utils';
 import './AdminDashboardPage.css';
 
 const ADMIN_TAB = {
@@ -150,6 +151,8 @@ function ApplicationCard({
   meta,
   status,
   reason,
+  profileImageUrl,
+  bannerUrl,
   detailItems = [],
   documents = [],
   busy,
@@ -157,12 +160,26 @@ function ApplicationCard({
   onReject,
 }) {
   return (
-    <article className="admin-dashboard-application-card">
-      <div>
-        <span className="admin-dashboard-kicker">{type}</span>
-        <h3>{title}</h3>
-        <p>{subtitle}</p>
-        <small>{meta}</small>
+    <article className="admin-dashboard-application-card admin-dashboard-application-card-clean">
+      {bannerUrl ? (
+        <div className="admin-dashboard-app-card-banner">
+          <img src={bannerUrl} alt="" />
+        </div>
+      ) : null}
+      <div className="admin-dashboard-app-card-body">
+        <div className="admin-dashboard-app-card-identity">
+          {profileImageUrl ? (
+            <img className="admin-dashboard-app-card-avatar" src={profileImageUrl} alt="" />
+          ) : (
+            <div className="admin-dashboard-avatar">{(title || '?').slice(0, 1).toUpperCase()}</div>
+          )}
+          <div>
+            <span className="admin-dashboard-kicker">{type}</span>
+            <h3>{title}</h3>
+            <p>{subtitle}</p>
+            <small>{meta}</small>
+          </div>
+        </div>
         {reason ? <small className="admin-dashboard-rejection-reason">Reason: {reason}</small> : null}
         {detailItems.length ? (
           <dl className="admin-dashboard-rider-details">
@@ -192,12 +209,11 @@ function ApplicationCard({
         ) : null}
       </div>
       <div className="admin-dashboard-card-actions">
-        <StatusPill status={status} />
         <button type="button" className="admin-dashboard-primary" onClick={onVerify} disabled={busy}>
-          {busy ? 'Verifying...' : 'Verify'}
+          {busy ? 'Verifying...' : 'Accept'}
         </button>
         <button type="button" className="admin-dashboard-danger" onClick={onReject} disabled={busy}>
-          Reject
+          Decline
         </button>
       </div>
     </article>
@@ -207,22 +223,22 @@ function ApplicationCard({
 function UserRow({ profile, busy, onStatusChange, onDelete }) {
   const suspended = profile.verification_status === 'suspended';
   const nextStatus = suspended ? 'verified' : 'suspended';
+  const avatarUrl = profile.avatar_url || profile.profile_image_url || '';
 
   return (
     <article className="admin-dashboard-user-row">
       <div className="admin-dashboard-user-main">
-        <div className="admin-dashboard-avatar">
-          {(profile.full_name || profile.email || '?').slice(0, 1).toUpperCase()}
-        </div>
+        {avatarUrl ? (
+          <img className="admin-dashboard-avatar-img" src={avatarUrl} alt="" />
+        ) : (
+          <div className="admin-dashboard-avatar">
+            {(profile.full_name || profile.email || '?').slice(0, 1).toUpperCase()}
+          </div>
+        )}
         <div>
           <strong>{profile.full_name || 'Unnamed user'}</strong>
           <span>{profile.email || profile.phone || 'No contact saved'}</span>
         </div>
-      </div>
-
-      <div className="admin-dashboard-user-meta">
-        <span>{profile.role || USER_ROLES.CUSTOMER}</span>
-        <StatusPill status={profile.verification_status} />
       </div>
 
       <div className="admin-dashboard-row-actions">
@@ -292,6 +308,7 @@ export default function AdminDashboardPage({ session, supabase, onLogout }) {
   const [error, setError] = useState('');
   const [contactSubmissions, setContactSubmissions] = useState([]);
   const [contactLoading, setContactLoading] = useState(false);
+  const [userSearch, setUserSearch] = useState('');
 
   const adminName = session?.user?.user_metadata?.full_name || session?.user?.email || 'Admin';
   const activeCopy = tabCopy[activeTab] || tabCopy[ADMIN_TAB.OVERVIEW];
@@ -361,6 +378,15 @@ export default function AdminDashboardPage({ session, supabase, onLogout }) {
     return () => {
       active = false;
     };
+  }, [supabase]);
+
+  // Real-time auto-refresh via Supabase subscriptions
+  useEffect(() => {
+    return subscribeToRestaurantFeed(
+      supabase,
+      () => loadDashboard({ silent: true }),
+      () => {},
+    );
   }, [supabase]);
 
   // Load contact submissions
@@ -526,9 +552,6 @@ export default function AdminDashboardPage({ session, supabase, onLogout }) {
           </button>
 
           <div className="admin-dashboard-nav-actions">
-            <button type="button" className="admin-dashboard-secondary" onClick={() => loadDashboard()} disabled={loading}>
-              {loading ? 'Refreshing...' : 'Refresh'}
-            </button>
             <button type="button" className="admin-dashboard-logout" onClick={onLogout}>Logout</button>
           </div>
         </div>
@@ -650,10 +673,12 @@ export default function AdminDashboardPage({ session, supabase, onLogout }) {
                     key={restaurant.id}
                     type="Restaurant"
                     title={restaurant.name}
-                    subtitle={restaurant.address || 'No location saved'}
+                    subtitle={getShortAddress(restaurant.address || 'No location saved')}
                     meta={`${restaurant.owner?.full_name || 'Owner'} · ${restaurant.contact_phone || restaurant.owner?.phone || 'No phone'}`}
                     status={restaurant.verification_status}
                     reason={restaurant.rejection_reason}
+                    profileImageUrl={restaurant.profile_image_url}
+                    bannerUrl={restaurant.banner_url || restaurant.image_url}
                     busy={busyKey === `restaurant-${restaurant.id}`}
                     onVerify={() => handleVerifyRestaurant(restaurant)}
                     onReject={() => handleRejectRestaurant(restaurant)}
@@ -710,20 +735,48 @@ export default function AdminDashboardPage({ session, supabase, onLogout }) {
               <div className="admin-dashboard-panel-head">
                 <div>
                   <span className="admin-dashboard-kicker">Accounts</span>
-                  <h2>{sortedUsers.length} users</h2>
+                  <h2>{sortedUsers.filter((p) => (p.role || USER_ROLES.CUSTOMER) !== USER_ROLES.ADMIN && p.role !== 'admin').length} users</h2>
                 </div>
               </div>
-              <div className="admin-dashboard-user-list">
-                {sortedUsers.map((profile) => (
-                  <UserRow
-                    key={profile.id}
-                    profile={profile}
-                    busy={busyKey.endsWith(profile.id)}
-                    onStatusChange={handleStatusChange}
-                    onDelete={handleDeleteUser}
-                  />
-                ))}
+              <div className="admin-dashboard-search-bar">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
+                <input
+                  type="text"
+                  placeholder="Search users by name, email or phone..."
+                  value={userSearch}
+                  onChange={(event) => setUserSearch(event.target.value)}
+                />
               </div>
+              {[{ label: 'Restaurant Owners', role: USER_ROLES.RESTAURANT_OWNER }, { label: 'Riders', role: USER_ROLES.RIDER }, { label: 'Customers', role: USER_ROLES.CUSTOMER }].map((group) => {
+                const allGroupUsers = sortedUsers.filter((p) => (p.role || USER_ROLES.CUSTOMER) === group.role);
+                const searchLower = userSearch.toLowerCase().trim();
+                const groupUsers = searchLower
+                  ? allGroupUsers.filter((p) =>
+                    (p.full_name || '').toLowerCase().includes(searchLower) ||
+                    (p.email || '').toLowerCase().includes(searchLower) ||
+                    (p.phone || '').toLowerCase().includes(searchLower)
+                  )
+                  : allGroupUsers;
+                if (!allGroupUsers.length && !searchLower) return null;
+                return (
+                  <div key={group.role} className="admin-dashboard-user-group-card">
+                    <h3 className="admin-dashboard-user-group-title">{group.label} <span>{searchLower && groupUsers.length !== allGroupUsers.length ? `${groupUsers.length} / ${allGroupUsers.length}` : allGroupUsers.length}</span></h3>
+                    <div className="admin-dashboard-user-list">
+                      {groupUsers.length ? groupUsers.map((profile) => (
+                        <UserRow
+                          key={profile.id}
+                          profile={profile}
+                          busy={busyKey.endsWith(profile.id)}
+                          onStatusChange={handleStatusChange}
+                          onDelete={handleDeleteUser}
+                        />
+                      )) : (
+                        <p className="admin-dashboard-note">{searchLower ? 'No matches found.' : `No ${group.label.toLowerCase()} yet.`}</p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </section>
           ) : null}
 
