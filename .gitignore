@@ -31,5 +31,8 @@ pnpm-debug.log*
 .env.test.local
 .env.production.local
 
+# setup script (contains real API keys)
+setup.sh
+
 # turbo
 .turbo/

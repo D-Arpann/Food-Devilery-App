@@ -28,6 +28,6 @@ export const ORDER_STATUS = {
 };
 
 export const SUPABASE_DEFAULTS = {
-  URL: 'https://uddbtfkgcfflcciaoola.supabase.co',
-  ANON_KEY: 'sb_publishable_UEjjmsv84THRnMJe6a8IaA_A1aroi3d'
+  URL: '',
+  ANON_KEY: ''
 };
