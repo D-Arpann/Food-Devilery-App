@@ -8,6 +8,8 @@ WEB_PORT="${WEB_PORT:-5173}"
 MOBILE_PORT="${MOBILE_PORT:-8081}"
 AVD_NAME="${AVD_NAME:-}"
 WEB_PID=""
+ANDROID_SERIAL_SELECTED=""
+EXPO_DEVICE_SELECTED=""
 
 cleanup() {
   if [[ -n "$WEB_PID" ]] && kill -0 "$WEB_PID" >/dev/null 2>&1; then
@@ -65,6 +67,44 @@ wait_for_android() {
   done
 }
 
+expo_name_for_attached_serial() {
+  local serial="$1"
+  local line part
+
+  line="$(adb devices -l | awk -v serial="$serial" '$1 == serial { print; exit }')"
+  for part in $line; do
+    if [[ "$part" == model:* ]]; then
+      printf '%s' "${part#model:}"
+      return
+    fi
+  done
+
+  printf 'Device %s' "$serial"
+}
+
+expo_name_for_emulator_serial() {
+  local serial="$1"
+
+  adb -s "$serial" emu avd name 2>/dev/null | tr -d '\r' | awk 'NF { print; exit }'
+}
+
+wait_for_emulator_serial() {
+  local serial
+  local deadline=$((SECONDS + 180))
+
+  while (( SECONDS < deadline )); do
+    serial="$(adb devices | awk 'NR > 1 && $2 == "device" && $1 ~ /^emulator-/ { print $1; exit }')"
+    if [[ -n "$serial" ]]; then
+      printf '%s' "$serial"
+      return
+    fi
+    sleep 2
+  done
+
+  echo "Timed out waiting for Android emulator to appear in adb." >&2
+  exit 1
+}
+
 pick_phone() {
   local serials
   mapfile -t serials < <(adb devices | awk 'NR > 1 && $2 == "device" && $1 !~ /^emulator-/ { print $1 }')
@@ -78,7 +118,8 @@ pick_phone() {
     exit 1
   fi
 
-  printf '%s' "${serials[0]}"
+  ANDROID_SERIAL_SELECTED="${serials[0]}"
+  EXPO_DEVICE_SELECTED="$(expo_name_for_attached_serial "$ANDROID_SERIAL_SELECTED")"
 }
 
 pick_emulator() {
@@ -86,7 +127,8 @@ pick_emulator() {
   serial="$(adb devices | awk 'NR > 1 && $2 == "device" && $1 ~ /^emulator-/ { print $1; exit }')"
 
   if [[ -n "$serial" ]]; then
-    printf '%s' "$serial"
+    ANDROID_SERIAL_SELECTED="$serial"
+    EXPO_DEVICE_SELECTED="$(expo_name_for_emulator_serial "$ANDROID_SERIAL_SELECTED")"
     return
   fi
 
@@ -99,22 +141,21 @@ pick_emulator() {
 
   echo "Starting Android emulator: $avd" >&2
   emulator -avd "$avd" -gpu swiftshader_indirect -no-audio -no-boot-anim >/tmp/chito-mitho-emulator.log 2>&1 &
-  adb wait-for-device
-  serial="$(adb devices | awk 'NR > 1 && $2 == "device" && $1 ~ /^emulator-/ { print $1; exit }')"
+  serial="$(wait_for_emulator_serial)"
   wait_for_android "$serial"
-  printf '%s' "$serial"
+  ANDROID_SERIAL_SELECTED="$serial"
+  EXPO_DEVICE_SELECTED="$avd"
 }
 
 start_mobile() {
   local target="$1"
-  local serial
 
   case "$target" in
     p|phone|connected|device)
-      serial="$(pick_phone)"
+      pick_phone
       ;;
     e|emulator|emu)
-      serial="$(pick_emulator)"
+      pick_emulator
       ;;
     *)
       echo "Unknown mobile target: $target"
@@ -122,9 +163,14 @@ start_mobile() {
       ;;
   esac
 
-  echo "Starting mobile app on $serial"
-  adb -s "$serial" reverse "tcp:${MOBILE_PORT}" "tcp:${MOBILE_PORT}" >/dev/null 2>&1 || true
-  ANDROID_SERIAL="$serial" EXPO_DEVTOOLS_LISTEN_ADDRESS=0.0.0.0 npm run android --workspace @repo/mobile -- --device "$serial" --port "$MOBILE_PORT"
+  if [[ -z "$ANDROID_SERIAL_SELECTED" ]] || [[ -z "$EXPO_DEVICE_SELECTED" ]]; then
+    echo "Unable to resolve Android target for Expo." >&2
+    exit 1
+  fi
+
+  echo "Starting mobile app on ${EXPO_DEVICE_SELECTED} (${ANDROID_SERIAL_SELECTED})"
+  adb -s "$ANDROID_SERIAL_SELECTED" reverse "tcp:${MOBILE_PORT}" "tcp:${MOBILE_PORT}" >/dev/null 2>&1 || true
+  ANDROID_SERIAL="$ANDROID_SERIAL_SELECTED" EXPO_DEVTOOLS_LISTEN_ADDRESS=0.0.0.0 npm run android --workspace @repo/mobile -- --device "$EXPO_DEVICE_SELECTED" --port "$MOBILE_PORT"
 }
 
 run_target="$(normalize_choice "${1:-}")"
