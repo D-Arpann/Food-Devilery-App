@@ -151,6 +151,10 @@ start_mobile() {
   local target="$1"
 
   case "$target" in
+    x|expo)
+      start_expo
+      return
+      ;;
     p|phone|connected|device)
       pick_phone
       ;;
@@ -173,6 +177,11 @@ start_mobile() {
   ANDROID_SERIAL="$ANDROID_SERIAL_SELECTED" EXPO_DEVTOOLS_LISTEN_ADDRESS=0.0.0.0 npm run android --workspace @repo/mobile -- --device "$EXPO_DEVICE_SELECTED" --port "$MOBILE_PORT"
 }
 
+start_expo() {
+  echo "Starting Expo dev server on port ${MOBILE_PORT}"
+  EXPO_DEVTOOLS_LISTEN_ADDRESS=0.0.0.0 npm run start --workspace @repo/mobile -- --port "$MOBILE_PORT"
+}
+
 run_target="$(normalize_choice "${1:-}")"
 if [[ -z "$run_target" ]]; then
   run_target="$(ask_choice 'Run web, mobile, or both? [w/m/b]:' 'b')"
@@ -182,7 +191,7 @@ case "$run_target" in
   m|mobile)
     mobile_target="$(normalize_choice "${2:-}")"
     if [[ -z "$mobile_target" ]]; then
-      mobile_target="$(ask_choice 'Emulator or phone? [e/p]:' 'p')"
+      mobile_target="$(ask_choice 'Emulator, phone, or Expo? [e/p/x]:' 'p')"
     fi
     start_mobile "$mobile_target"
     ;;
@@ -196,7 +205,7 @@ case "$run_target" in
     start_web
     mobile_target="$(normalize_choice "${2:-}")"
     if [[ -z "$mobile_target" ]]; then
-      mobile_target="$(ask_choice 'Emulator or phone? [e/p]:' 'p')"
+      mobile_target="$(ask_choice 'Emulator, phone, or Expo? [e/p/x]:' 'p')"
     fi
     start_mobile "$mobile_target"
     if [[ -n "$WEB_PID" ]]; then
