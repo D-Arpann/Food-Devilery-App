@@ -50,11 +50,12 @@ function shortId(value = '') {
 }
 
 function getCustomerName(order) {
-  return order?.customer?.full_name || order?.customer?.phone || 'Customer';
+  return order?.customer?.full_name || order?.customer?.phone || order?.customer?.email || 'Customer';
 }
 
 function getItemCount(order) {
-  return (order?.lineItems || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const lineCount = (order?.lineItems || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  return lineCount || (order?.lineItems?.length || 0);
 }
 
 function getNextAction(order) {
@@ -186,9 +187,9 @@ function OrderCard({ order, type, busy, onClaim, onAdvance }) {
 
         {type === 'available' ? (
           <Pressable
-            style={[styles.primaryButton, busy && styles.buttonDisabled]}
+            style={[styles.primaryButton, (busy || order._claimDisabled) && styles.buttonDisabled]}
             onPress={() => onClaim(order)}
-            disabled={busy}
+            disabled={busy || order._claimDisabled}
           >
             <Ionicons name="add-circle-outline" size={16} color={RIDER_COLORS.white} />
             <Text style={styles.primaryButtonText}>{busy ? 'Claiming...' : 'Claim'}</Text>
@@ -287,9 +288,22 @@ export function RiderScreen({ session, supabase, topInset = 0, bottomInset = 0 }
     return subscribeToRiderJobs(
       supabase,
       () => loadRiderData({ quiet: true }),
-      () => setMessage('Live jobs are delayed. Pull refresh to check manually.'),
+      () => {},
     );
   }, [isVerified, loadRiderData, supabase]);
+
+  // Auto-refresh every 10 seconds when online
+  useEffect(() => {
+    if (!supabase || !isVerified || !isOnline) {
+      return undefined;
+    }
+
+    const timer = setInterval(() => {
+      loadRiderData({ quiet: true });
+    }, 10000);
+
+    return () => clearInterval(timer);
+  }, [isVerified, isOnline, loadRiderData, supabase]);
 
   useEffect(() => {
     if (!supabase || !isVerified || !isOnline || !activeOrders.length) {
@@ -301,36 +315,43 @@ export function RiderScreen({ session, supabase, topInset = 0, bottomInset = 0 }
     const activeOrder = activeOrders[0];
 
     async function startLocationWatch() {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted' || cancelled) {
-        setMessage('Location permission is required for live delivery tracking.');
-        return;
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted' || cancelled) {
+          setMessage('Location permission is required for live delivery tracking.');
+          return;
+        }
+
+        subscription = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 7000,
+            distanceInterval: 20,
+          },
+          async (location) => {
+            if (cancelled || !activeOrder?.id) {
+              return;
+            }
+
+            try {
+              await updateRiderLocation(supabase, {
+                orderId: activeOrder.id,
+                coordinates: {
+                  latitude: location.coords.latitude,
+                  longitude: location.coords.longitude,
+                },
+                heading: location.coords.heading,
+                speedMps: location.coords.speed,
+                accuracyM: location.coords.accuracy,
+              });
+            } catch (_locationError) {
+              // Silently ignore location update errors to avoid crashing the watch
+            }
+          },
+        );
+      } catch (_watchError) {
+        // Location watch failed to start — device may not support it
       }
-
-      subscription = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.Balanced,
-          timeInterval: 7000,
-          distanceInterval: 20,
-        },
-        async (location) => {
-          if (cancelled || !activeOrder?.id) {
-            return;
-          }
-
-          await updateRiderLocation(supabase, {
-            orderId: activeOrder.id,
-            coordinates: {
-              latitude: location.coords.latitude,
-              longitude: location.coords.longitude,
-            },
-            heading: location.coords.heading,
-            speedMps: location.coords.speed,
-            accuracyM: location.coords.accuracy,
-          });
-          await loadRiderData({ quiet: true });
-        },
-      );
     }
 
     startLocationWatch();
@@ -367,6 +388,11 @@ export function RiderScreen({ session, supabase, topInset = 0, bottomInset = 0 }
   };
 
   const handleClaim = async (order) => {
+    if (activeOrders.length > 0) {
+      setError('Complete your current delivery before claiming another.');
+      return;
+    }
+
     setBusyKey(`claim-${order.id}`);
     setMessage('');
     setError('');
@@ -654,14 +680,6 @@ export function RiderScreen({ session, supabase, topInset = 0, bottomInset = 0 }
 
           <View style={styles.sectionHead}>
             <Text style={styles.sectionTitle}>Active deliveries</Text>
-            <Pressable
-              style={[styles.refreshButton, loading && styles.buttonDisabled]}
-              onPress={() => loadRiderData()}
-              disabled={loading}
-            >
-              <Ionicons name="refresh-outline" size={14} color={RIDER_COLORS.orangeHot} />
-              <Text style={styles.refreshText}>{loading ? 'Loading' : 'Refresh'}</Text>
-            </Pressable>
           </View>
 
           <View style={styles.listPanel}>
@@ -689,7 +707,7 @@ export function RiderScreen({ session, supabase, topInset = 0, bottomInset = 0 }
               availableJobs.map((order) => (
                 <OrderCard
                   key={order.id}
-                  order={order}
+                  order={{ ...order, _claimDisabled: activeOrders.length > 0 }}
                   type="available"
                   busy={busyKey === `claim-${order.id}`}
                   onClaim={handleClaim}

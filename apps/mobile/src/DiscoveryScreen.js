@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Animated,
   Image,
   Modal,
   Platform,
@@ -372,6 +373,11 @@ function NonFeaturedCard({ restaurant, onPress }) {
             <MaterialCommunityIcons name="star" size={13} color="#111" />
             <Text style={styles.nonFeaturedChipText}>{getRestaurantRating(restaurant.id)}</Text>
           </View>
+          <View style={styles.metaDot} />
+          <View style={styles.nonFeaturedChip}>
+            <MaterialCommunityIcons name="motorbike" size={13} color="#6E6761" />
+            <Text style={styles.nonFeaturedChipText}>{formatNpr(getDeliveryFee(restaurant.id))}</Text>
+          </View>
         </View>
       </View>
     </Pressable>
@@ -473,8 +479,8 @@ function BottomNav({ activeTab, onChange, bottomInset, cartCount = 0 }) {
   const getTabIcon = (tabKey, active) => {
     if (tabKey === TAB_HOME) {
       return (
-        <MaterialIcons
-          name="home"
+        <Ionicons
+          name={active ? 'home' : 'home-outline'}
           size={21}
           color={active ? '#F8964F' : '#9E9E9E'}
         />
@@ -1122,6 +1128,20 @@ export function DiscoveryScreen({
     };
   }, [session?.isTemporaryAuth, session?.user?.id, supabase]);
 
+  // Force-refresh orders when switching to Orders tab
+  useEffect(() => {
+    if (activeTab !== TAB_ORDERS || session?.isTemporaryAuth || !session?.user?.id) {
+      return;
+    }
+
+    (async () => {
+      const { data, error: customerOrdersError } = await fetchCustomerOrders(supabase, session.user.id, { limit: 30 });
+      if (!customerOrdersError) {
+        setRemoteOrders((current) => mergeOrderRecords(current, (data || []).map(normalizeOrderRecord).filter(Boolean)));
+      }
+    })();
+  }, [activeTab, session?.isTemporaryAuth, session?.user?.id, supabase]);
+
   useEffect(() => {
     if (session?.isTemporaryAuth || !session?.user?.id || !supabase) {
       return undefined;
@@ -1181,7 +1201,7 @@ export function DiscoveryScreen({
       if (!customerOrdersError) {
         setRemoteOrders((current) => mergeOrderRecords(current, (data || []).map(normalizeOrderRecord).filter(Boolean)));
       }
-    }, 15000);
+    }, 8000);
 
     return () => clearInterval(timer);
   }, [currentOrders.length, session?.isTemporaryAuth, session?.user?.id, supabase]);
@@ -2520,13 +2540,6 @@ export function DiscoveryScreen({
                   </View>
                 </View>
                 <View style={styles.homeActionGroup}>
-                  <Pressable
-                    style={styles.homeIconButton}
-                    onPress={() => setActiveTab(TAB_ORDERS)}
-                    accessibilityLabel="Notifications"
-                  >
-                    <MaterialIcons name="notifications-none" size={22} color={COLORS.ink} />
-                  </Pressable>
                   <Pressable
                     style={styles.homeProfileAvatarButton}
                     onPress={() => setActiveTab(TAB_PROFILE)}
@@ -8140,8 +8153,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   homeGreetingBlock: {
-    marginTop: 20,
-    marginBottom: 12,
+    marginTop: 22,
+    marginBottom: 20,
   },
   homeCravingTitle: {
     color: COLORS.ink,
@@ -8186,6 +8199,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF8F3',
     paddingHorizontal: 10,
     paddingVertical: 8,
+    marginTop: 14,
     marginBottom: 14,
     flexDirection: 'row',
     alignItems: 'center',

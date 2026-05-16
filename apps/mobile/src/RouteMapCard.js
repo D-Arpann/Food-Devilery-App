@@ -1,5 +1,5 @@
 import { StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, Polyline } from 'react-native-maps';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   canRenderNativeGoogleMap,
@@ -81,7 +81,6 @@ export function RouteMapCard({
       <View style={[styles.mapShell, compact && styles.mapShellCompact]}>
         {canRenderMap && fallbackCoordinate ? (
           <MapView
-            provider={PROVIDER_GOOGLE}
             style={StyleSheet.absoluteFill}
             initialRegion={coordinateToRegion(fallbackCoordinate, 0.026)}
             scrollEnabled={false}
@@ -127,17 +126,23 @@ export function RouteMapCard({
       </View>
 
       <View style={styles.routeText}>
-        <View>
-          <Text style={styles.routeLabel}>{pickupLabel || order?.restaurant?.name || 'Pickup'}</Text>
-          <Text style={styles.routeAddress} numberOfLines={1}>
-            {pickupAddress || order?.restaurant?.address || 'Restaurant pickup'}
-          </Text>
+        <View style={styles.routeStop}>
+          <View style={[styles.routeStopDot, { backgroundColor: '#2E6B4F' }]} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.routeLabel}>{pickupLabel || order?.restaurant?.name || 'Pickup'}</Text>
+            <Text style={styles.routeAddress} numberOfLines={1}>
+              {pickupAddress || order?.restaurant?.address || 'Restaurant pickup'}
+            </Text>
+          </View>
         </View>
-        <View>
-          <Text style={styles.routeLabel}>{dropoffLabel || target.label}</Text>
-          <Text style={styles.routeAddress} numberOfLines={2}>
-            {dropoffAddress || target.address}
-          </Text>
+        <View style={styles.routeStop}>
+          <View style={[styles.routeStopDot, { backgroundColor: '#1E1E1E' }]} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.routeLabel}>{dropoffLabel || target.label}</Text>
+            <Text style={styles.routeAddress} numberOfLines={2}>
+              {dropoffAddress || order?.delivery_address || target.address}
+            </Text>
+          </View>
         </View>
       </View>
     </View>
@@ -240,6 +245,17 @@ const styles = StyleSheet.create({
   },
   routeText: {
     gap: 8,
+  },
+  routeStop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  routeStopDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginTop: 4,
   },
   routeLabel: {
     color: '#1E1E1E',
