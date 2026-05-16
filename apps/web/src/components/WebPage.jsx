@@ -3,6 +3,7 @@ import { DeviceFrameset } from 'react-device-frameset'
 import 'react-device-frameset/styles/marvel-devices.min.css'
 import { submitContactForm } from '@repo/api'
 import { AppScreenshot, HeroIllustration, Logo } from '@repo/ui'
+import Chatbot from './Chatbot'
 import './WebPage.css'
 
 const features = [
@@ -447,6 +448,8 @@ export default function WebPage({ supabase, onOpenLogin, onOpenRestaurantSignup 
           </div>
         </div>
       </footer>
+
+      <Chatbot />
     </>
   )
 }
